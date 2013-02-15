@@ -1,0 +1,12 @@
+<manifest>
+	<define>
+		<domain name="pims-ipc"/>
+	</define>
+	<assign>
+		<filesystem path="/usr/lib/libpims-ipc.so.1.0.1" label="_" />
+		<filesystem path="/usr/lib/libpims-ipc.so.1" label="_" />
+	</assign>
+	<request>
+		<domain name="pims-ipc" />
+	</request>
+</manifest>
