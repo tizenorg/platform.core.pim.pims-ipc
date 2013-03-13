@@ -2,8 +2,8 @@
 
 prefix=@PREFIX@
 exec_prefix=@EXEC_PREFIX@
-libdir=@LIBDIR@
-includedir=@INCLUDEDIR@
+libdir=@LIB_INSTALL_DIR@
+includedir=@INCLUDE_INSTALL_DIR@/pims-ipc
 
 Name: @PROJECT_NAME@
 Description: @PROJECT_NAME@ library

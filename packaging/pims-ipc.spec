@@ -3,11 +3,8 @@ Summary:    library for PIMs IPC
 Version:    0.0.22
 Release:    1
 Group:      System/Libraries
-License:    Apache 2.0
+License:    Apache-2.0
 Source0:    %{name}-%{version}.tar.gz
-Requires(post): /sbin/ldconfig
-Requires(post): /usr/bin/sqlite3
-Requires(postun): /sbin/ldconfig
 
 BuildRequires: cmake
 BuildRequires: pkgconfig(glib-2.0)
@@ -21,7 +18,7 @@ library for PIMs IPC
 %package devel
 Summary:    DB library for calendar
 Group:      Development/Libraries
-Requires:   %{name} = %{version}-%{release}
+Requires:   %{name} = %{version}
 
 %description devel
 library for PIMs IPC (developement files)
@@ -31,17 +28,14 @@ library for PIMs IPC (developement files)
 
 
 %build
-cmake . -DCMAKE_INSTALL_PREFIX=%{_prefix}
-
-
+%cmake .
 make %{?jobs:-j%jobs}
 
 %install
 %make_install
 
 
-%post
-/sbin/ldconfig
+%post -p /sbin/ldconfig
 
 %postun -p /sbin/ldconfig
 
