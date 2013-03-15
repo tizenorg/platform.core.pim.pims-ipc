@@ -36,7 +36,7 @@ extern "C"
 /* debug base macro */
 #ifndef _NON_SLP
 #define __ug_log(logtype, tag, frmt, args...) \
-        do {LOG(logtype, tag, "[%s:%d] "frmt"\n", __FUNCTION__, __LINE__, ##args);} while (0)
+        do {LOG(logtype, tag, "%s:%s(%d) > "frmt"\n", __MODULE__, __FUNCTION__, __LINE__, ##args);} while (0)
 #else
 #define LOG_VERBOSE "VERBOSE"
 #define LOG_DEBUG   "DEBUG"
@@ -44,7 +44,7 @@ extern "C"
 #define LOG_WARN    "WARN"
 #define LOG_ERROR   "ERROR"
 #define __ug_log(logtype, tag, frmt, args...) \
-        do {printf("[%s][%s][%08x][%s:%d] "frmt"\n", logtype, tag, (unsigned int)pthread_self(), __FUNCTION__, __LINE__, ##args);} while (0)
+        do {printf("[%s][%s][%08x] %s:%s(%d) > "frmt"\n", logtype, tag, (unsigned int)pthread_self(), __MODULE__, __FUNCTION__, __LINE__, ##args);} while (0)
 #endif
 
 #define pims_verbose(tag, frmt, args...) __ug_log(LOG_VERBOSE, tag, frmt, ##args)
@@ -63,7 +63,8 @@ extern "C"
 #define PIMS_WARN_TAG(frmt, args...)    pims_warn   (TAG_NAME, frmt, ##args);
 #define PIMS_ERROR_TAG(frmt, args...)   pims_error  (TAG_NAME, frmt, ##args);
 
-#define VERBOSE(frmt, args...)  PIMS_VERBOSE_TAG(frmt, ##args)
+//#define VERBOSE(frmt, args...)  PIMS_VERBOSE_TAG(frmt, ##args)
+#define VERBOSE(frmt, args...)
 #define DEBUG(frmt, args...)    PIMS_DEBUG_TAG(frmt, ##args)
 #define INFO(frmt, args...)     PIMS_INFO_TAG(frmt, ##args)
 #define WARNING(frmt, args...)  PIMS_WARN_TAG(frmt, ##args)
