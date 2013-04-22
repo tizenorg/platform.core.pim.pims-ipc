@@ -1,6 +1,6 @@
 Name:       pims-ipc
 Summary:    library for PIMs IPC
-Version:    0.0.22
+Version:    0.0.28
 Release:    1
 Group:      System/Libraries
 License:    Apache-2.0
@@ -18,7 +18,7 @@ library for PIMs IPC
 %package devel
 Summary:    DB library for calendar
 Group:      Development/Libraries
-Requires:   %{name} = %{version}
+Requires:   %{name} = %{version}-%{release}
 
 %description devel
 library for PIMs IPC (developement files)

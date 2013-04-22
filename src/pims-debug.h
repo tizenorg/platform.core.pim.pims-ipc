@@ -1,7 +1,7 @@
 /*
  * PIMS IPC
  *
- * Copyright (c) 2012 Samsung Electronics Co., Ltd All Rights Reserved
+ * Copyright (c) 2012 - 2013 Samsung Electronics Co., Ltd. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the License);
  * you may not use this file except in compliance with the License.
@@ -44,7 +44,7 @@ extern "C"
 #define LOG_WARN    "WARN"
 #define LOG_ERROR   "ERROR"
 #define __ug_log(logtype, tag, frmt, args...) \
-        do {printf("[%s][%s][%08x] %s:%s(%d) > "frmt"\n", logtype, tag, (unsigned int)pthread_self(), __MODULE__, __FUNCTION__, __LINE__, ##args);} while (0)
+        do {printf("[%s][%s][%08x] %s:%s(%d) > "frmt"\n", logtype, tag, (unsigned int)pthread_self(), __FILE__, __FUNCTION__, __LINE__, ##args);} while (0)
 #endif
 
 #define pims_verbose(tag, frmt, args...) __ug_log(LOG_VERBOSE, tag, frmt, ##args)

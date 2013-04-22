@@ -1,7 +1,7 @@
 /*
  * PIMS IPC
  *
- * Copyright (c) 2012 Samsung Electronics Co., Ltd All Rights Reserved
+ * Copyright (c) 2012 - 2013 Samsung Electronics Co., Ltd. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the License);
  * you may not use this file except in compliance with the License.
@@ -83,6 +83,58 @@ typedef struct
     GHashTable *subscribe_cb_table;
 } pims_ipc_t;
 
+#define PIMS_IPC_SOCKET_BUFFER_SIZE     256
+static inline int __pims_zmq_msg_recv_by_handle(zmq_msg_t *msg, pims_ipc_t *handle, int flags)
+{
+    int ret = -1;
+
+    while (1)
+    {
+        zmq_pollitem_t items[] = {
+            {handle->requester, 0, ZMQ_POLLIN, 0},
+            {NULL, handle->fd, ZMQ_POLLIN, 0}
+        };
+
+        if (zmq_poll(items, 2, -1) == -1)
+        {
+            if (errno == EINTR)
+                continue;
+            
+            ERROR("poll error : %s", zmq_strerror(errno));
+            break;
+        }
+
+        if (items[0].revents & ZMQ_POLLIN)
+        {
+            ret = zmq_msg_recv(msg, handle->requester, flags);
+            if (ret == -1 && errno == EINTR)
+                continue;
+            break;
+        }
+
+        if (items[1].revents & ZMQ_POLLIN)
+        {
+            char buffer[PIMS_IPC_SOCKET_BUFFER_SIZE] = "";
+           
+            memset(buffer, 0x00, PIMS_IPC_SOCKET_BUFFER_SIZE);
+            ret = read(handle->fd, (char *)buffer, PIMS_IPC_SOCKET_BUFFER_SIZE-1);
+            ASSERT(ret <= 0);
+            
+            close(handle->fd);
+            handle->fd = -1;
+
+            if (handle->requester)
+                zmq_close(handle->requester);
+            handle->requester = NULL;
+
+            errno = ETERM;
+            ret = -1;
+            break;
+        }
+    }
+
+    return ret;
+}
 
 static void __pims_ipc_free_handle(pims_ipc_t *handle)
 {
@@ -143,7 +195,7 @@ static int __pims_ipc_receive_for_subscribe(pims_ipc_t *handle)
 
     do {
         // recv call id 
-        if (_pims_zmq_msg_recv(&call_id_msg, handle->requester, 0) == -1)
+        if (__pims_zmq_msg_recv_by_handle(&call_id_msg, handle, 0) == -1)
         {
             ERROR("recv error : %s", zmq_strerror(errno));
             break;
@@ -156,7 +208,7 @@ static int __pims_ipc_receive_for_subscribe(pims_ipc_t *handle)
         zmq_getsockopt(handle->requester, ZMQ_RCVMORE, &more, &more_size);
         if (more)
         {
-            if (_pims_zmq_msg_recv(&data_msg, handle->requester, 0) == -1)
+            if (__pims_zmq_msg_recv_by_handle(&data_msg, handle, 0) == -1)
             {
                 ERROR("recv error : %s", zmq_strerror(errno));
                 break;
@@ -531,7 +583,7 @@ static int __pims_ipc_receive(pims_ipc_t *handle, pims_ipc_data_h *data_out)
 
         do {
             // recv sequence no
-            if (_pims_zmq_msg_recv(&sequence_no_msg, handle->requester, 0) == -1)
+            if (__pims_zmq_msg_recv_by_handle(&sequence_no_msg, handle, 0) == -1)
             {
                 ERROR("recv error : %s", zmq_strerror(errno));
                 break;
@@ -539,7 +591,7 @@ static int __pims_ipc_receive(pims_ipc_t *handle, pims_ipc_data_h *data_out)
             memcpy(&sequence_no, zmq_msg_data(&sequence_no_msg), sizeof(unsigned int));
 
             // recv call id 
-            if (_pims_zmq_msg_recv(&call_id_msg, handle->requester, 0) == -1)
+            if (__pims_zmq_msg_recv_by_handle(&call_id_msg, handle, 0) == -1)
             {
                 ERROR("recv error : %s", zmq_strerror(errno));
                 break;
@@ -549,7 +601,7 @@ static int __pims_ipc_receive(pims_ipc_t *handle, pims_ipc_data_h *data_out)
             zmq_getsockopt(handle->requester, ZMQ_RCVMORE, &more, &more_size);
             if (more)
             {
-                if (_pims_zmq_msg_recv(&data_out_msg, handle->requester, 0) == -1)
+                if (__pims_zmq_msg_recv_by_handle(&data_out_msg, handle, 0) == -1)
                 {
                     ERROR("recv error : %s", zmq_strerror(errno));
                     break;

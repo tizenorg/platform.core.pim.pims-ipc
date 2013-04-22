@@ -3,8 +3,8 @@
 		<domain name="pims-ipc"/>
 	</define>
 	<assign>
-		<filesystem path="@LIB_INSTALL_DIR@/libpims-ipc.so.1.0.1" label="_" />
-		<filesystem path="@LIB_INSTALL_DIR@/libpims-ipc.so.1" label="_" />
+		<filesystem path="@LIB_INSTALL_DIR@/libpims-ipc.so.0.0.28" label="_" />
+		<filesystem path="@LIB_INSTALL_DIR@/libpims-ipc.so.0" label="_" />
 	</assign>
 	<request>
 		<domain name="pims-ipc" />

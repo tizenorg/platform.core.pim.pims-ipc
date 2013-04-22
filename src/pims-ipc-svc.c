@@ -1,7 +1,7 @@
 /*
  * PIMS IPC
  *
- * Copyright (c) 2012 Samsung Electronics Co., Ltd All Rights Reserved
+ * Copyright (c) 2012 - 2013 Samsung Electronics Co., Ltd. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the License);
  * you may not use this file except in compliance with the License.
@@ -70,6 +70,15 @@ typedef struct
 
 static pims_ipc_svc_t *_g_singleton = NULL;
 static pims_ipc_svc_for_publish_t *_g_singleton_for_publish = NULL;
+
+#define PIMS_IPC_STRING_WORKER_ID_SIZE  10
+static char* __get_string_worker_id(int worker_id, char *string_worker_id)
+{
+    snprintf(string_worker_id, PIMS_IPC_STRING_WORKER_ID_SIZE, "%08x00", worker_id);
+    string_worker_id[PIMS_IPC_STRING_WORKER_ID_SIZE] = 0x0;
+
+    return string_worker_id;
+}
 
 API int pims_ipc_svc_init(char *service, gid_t group, mode_t mode)
 {
@@ -458,7 +467,9 @@ static void* __worker_loop(void *args)
         ERROR("socket error : %s", zmq_strerror(errno));
         return NULL;
     }
-    if (zmq_setsockopt(worker, ZMQ_IDENTITY, &worker_id, sizeof(int)) != 0)
+    char string_worker_id[PIMS_IPC_STRING_WORKER_ID_SIZE + 1] = "";
+    if (zmq_setsockopt(worker, ZMQ_IDENTITY, __get_string_worker_id(worker_id, string_worker_id),
+                PIMS_IPC_STRING_WORKER_ID_SIZE) != 0)
     {
         ERROR("setsockopt error : %s", zmq_strerror(errno));
         zmq_close(worker);
@@ -482,7 +493,8 @@ static void* __worker_loop(void *args)
         zmq_close(worker);
         return NULL;
     }
-    if (zmq_setsockopt(manager, ZMQ_IDENTITY, &worker_id, sizeof(int)) != 0)
+    if (zmq_setsockopt(manager, ZMQ_IDENTITY, __get_string_worker_id(worker_id, string_worker_id),
+                PIMS_IPC_STRING_WORKER_ID_SIZE) != 0)
     {
         ERROR("setsockopt error : %s", zmq_strerror(errno));
         zmq_close(manager);
@@ -524,6 +536,9 @@ static void* __worker_loop(void *args)
 
         if (zmq_poll(items, 2, -1) == -1)
         {
+            if (errno == EINTR)
+                continue;
+
             ERROR("poll error : %s", zmq_strerror(errno));
             break;
         }
@@ -618,8 +633,10 @@ static void __terminate_worker(void *manager, int worker_id, const char *pid)
 {
     // send worker id
     zmq_msg_t worker_id_msg;
-    zmq_msg_init_size(&worker_id_msg, sizeof(int));
-    memcpy(zmq_msg_data(&worker_id_msg), &worker_id, sizeof(int));
+    zmq_msg_init_size(&worker_id_msg, PIMS_IPC_STRING_WORKER_ID_SIZE);
+    char string_worker_id[PIMS_IPC_STRING_WORKER_ID_SIZE + 1] = "";
+    memcpy(zmq_msg_data(&worker_id_msg), __get_string_worker_id(worker_id, string_worker_id),
+            PIMS_IPC_STRING_WORKER_ID_SIZE);
     if (_pims_zmq_msg_send(&worker_id_msg, manager, ZMQ_SNDMORE) == -1)
     {
         ERROR("send error : %s", zmq_strerror(errno));
@@ -819,8 +836,10 @@ static int __process_router_event(void *context, void *router, void *worker, gbo
         VERBOSE("routing worker id = %x", worker_id);
         // send worker id
         zmq_msg_t worker_id_msg;
-        zmq_msg_init_size(&worker_id_msg, sizeof(int));
-        memcpy(zmq_msg_data(&worker_id_msg), &worker_id, sizeof(int));
+        zmq_msg_init_size(&worker_id_msg, PIMS_IPC_STRING_WORKER_ID_SIZE);
+        char string_worker_id[PIMS_IPC_STRING_WORKER_ID_SIZE + 1] = "";
+        memcpy(zmq_msg_data(&worker_id_msg), __get_string_worker_id(worker_id, string_worker_id),
+                PIMS_IPC_STRING_WORKER_ID_SIZE);
         if (_pims_zmq_msg_send(&worker_id_msg, worker, ZMQ_SNDMORE) == -1)
         {
             ERROR("send error : %s", zmq_strerror(errno));
