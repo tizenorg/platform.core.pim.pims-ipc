@@ -5,6 +5,7 @@ Release:    1
 Group:      System/Libraries
 License:    Apache-2.0
 Source0:    %{name}-%{version}.tar.gz
+Source1001: 	pims-ipc.manifest
 
 BuildRequires: cmake
 BuildRequires: pkgconfig(glib-2.0)
@@ -25,6 +26,7 @@ library for PIMs IPC (developement files)
 
 %prep
 %setup -q
+cp %{SOURCE1001} .
 
 
 %build
@@ -41,11 +43,12 @@ make %{?jobs:-j%jobs}
 
 
 %files
-%manifest pims-ipc.manifest
+%manifest %{name}.manifest
 %defattr(-,root,root,-)
 %{_libdir}/libpims-ipc.so.*
 
 %files devel
+%manifest %{name}.manifest
 %defattr(-,root,root,-)
 %{_includedir}/pims-ipc/*.h
 %{_libdir}/*.so
