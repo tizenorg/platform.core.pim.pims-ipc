@@ -1,0 +1,8 @@
+Change-Id: I58e4cbf6f68ad2c58b83d3f3d00bd15caed8c6d8
+Code-Review+2: Ryan Ware <ware@linux.intel.com>
+Verified+1: Ryan Ware <ware@linux.intel.com>
+Submitted-by: Ryan Ware <ware@linux.intel.com>
+Submitted-at: Mon, 08 Jul 2013 10:07:24 -0700
+Reviewed-on: https://review.tizen.org/gerrit/4475
+Project: platform/core/pim/pims-ipc
+Branch: refs/heads/tizen
