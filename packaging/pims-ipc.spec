@@ -1,11 +1,10 @@
 Name:       pims-ipc
 Summary:    library for PIMs IPC
-Version:    0.0.28
+Version:    0.0.30
 Release:    1
 Group:      System/Libraries
 License:    Apache-2.0
 Source0:    %{name}-%{version}.tar.gz
-Source1001: 	pims-ipc.manifest
 
 BuildRequires: cmake
 BuildRequires: pkgconfig(glib-2.0)
@@ -22,11 +21,10 @@ Group:      Development/Libraries
 Requires:   %{name} = %{version}-%{release}
 
 %description devel
-library for PIMs IPC (developement files)
+library for PIMs IPC (development files)
 
 %prep
 %setup -q
-cp %{SOURCE1001} .
 
 
 %build
@@ -36,19 +34,20 @@ make %{?jobs:-j%jobs}
 %install
 %make_install
 
+mkdir -p %{buildroot}/usr/share/license
+cp LICENSE.APLv2 %{buildroot}/usr/share/license/%{name}
 
 %post -p /sbin/ldconfig
 
 %postun -p /sbin/ldconfig
 
-
 %files
-%manifest %{name}.manifest
+%manifest pims-ipc.manifest
 %defattr(-,root,root,-)
 %{_libdir}/libpims-ipc.so.*
+/usr/share/license/%{name}
 
 %files devel
-%manifest %{name}.manifest
 %defattr(-,root,root,-)
 %{_includedir}/pims-ipc/*.h
 %{_libdir}/*.so

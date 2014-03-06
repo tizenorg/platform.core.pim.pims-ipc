@@ -24,7 +24,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C"
 {
 #endif
@@ -34,7 +34,7 @@ int _server_socket_init(const char *path, gid_t group, mode_t mode,
         server_socket_client_closed_cb callback, void *user_data);
 int _client_socket_init(const char *path, const char *pid);
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 }
 #endif
 

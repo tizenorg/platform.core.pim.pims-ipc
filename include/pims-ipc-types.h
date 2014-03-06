@@ -25,7 +25,7 @@
 #include <stdbool.h>
 
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C"
 {
 #endif
@@ -55,7 +55,7 @@ typedef void (*pims_ipc_svc_call_cb)(pims_ipc_h ipc, pims_ipc_data_h data_in,
 typedef void (*pims_ipc_call_async_cb)(pims_ipc_h ipc, pims_ipc_data_h data_out, void *userdata);
 typedef void (*pims_ipc_subscribe_cb)(pims_ipc_h ipc, pims_ipc_data_h data, void *userdata);
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 }
 #endif
 

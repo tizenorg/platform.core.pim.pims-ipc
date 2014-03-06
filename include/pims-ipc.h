@@ -22,7 +22,7 @@
 
 #include <pims-ipc-types.h>
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C"
 {
 #endif
@@ -40,7 +40,7 @@ void pims_ipc_destroy_for_subscribe(pims_ipc_h ipc);
 int pims_ipc_subscribe(pims_ipc_h ipc, char *module, char *event, pims_ipc_subscribe_cb callback, void *userdata);
 int pims_ipc_unsubscribe(pims_ipc_h ipc, char *module, char *event);
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 }
 #endif
 

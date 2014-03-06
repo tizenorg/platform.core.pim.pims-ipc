@@ -56,7 +56,6 @@ typedef struct
     pid_t pid;
     void *context;
     unsigned int ref_cnt;
-    unsigned int id_sequence_no;
     GList *subscribe_handles;
 } pims_ipc_context_t;
 
@@ -282,6 +281,17 @@ static gboolean __pims_ipc_subscribe_handler(GIOChannel *src, GIOCondition condi
     return TRUE;
 }
 
+static unsigned int __get_global_sequence_no()
+{
+    static unsigned int __gsequence_no = 0xffffffff;
+
+    if (__gsequence_no == 0xffffffff)
+        __gsequence_no = (unsigned int)time(NULL);
+    else
+        __gsequence_no++;
+    return __gsequence_no;
+}
+
 static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
 {
     pims_ipc_context_t *ghandle = NULL;
@@ -315,7 +325,6 @@ static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
                 break;
             }
             ghandle->context = context;
-            ghandle->id_sequence_no = (unsigned int)time(NULL);
             ghandle->ref_cnt = 1;
             _g_singleton = ghandle;
         }
@@ -338,7 +347,7 @@ static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
         handle->fd = -1;
 
         handle->service = g_strdup(service);
-        handle->id = g_strdup_printf("%x:%x", pid, ghandle->id_sequence_no++);
+        handle->id = g_strdup_printf("%x:%x", pid, __get_global_sequence_no());
         
         if (mode == PIMS_IPC_MODE_REQ)
         {

@@ -25,7 +25,7 @@
 #endif
 #include <assert.h>
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C"
 {
 #endif
@@ -77,7 +77,7 @@ extern "C"
     } \
     assert(expr)
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 }
 #endif
 

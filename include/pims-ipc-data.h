@@ -22,7 +22,7 @@
 
 #include <pims-ipc-types.h>
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C"
 {
 #endif
@@ -45,7 +45,7 @@ pims_ipc_data_h pims_ipc_data_unmarshal(void *buf, unsigned int size);
 pims_ipc_data_h pims_ipc_data_unmarshal_with_zmq(zmq_msg_t *pzmsg);
 pims_ipc_data_h pims_ipc_data_unmarshal_dup(void *buf, unsigned int size);
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 }
 #endif
 

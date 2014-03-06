@@ -22,7 +22,7 @@
 
 #include <zmq.h>
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C"
 {
 #endif
@@ -70,7 +70,7 @@ static inline int _pims_zmq_msg_send(zmq_msg_t *msg, void *socket, int flags)
     return ret;
 }
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 }
 #endif
 
