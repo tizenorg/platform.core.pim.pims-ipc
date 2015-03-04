@@ -20,9 +20,7 @@
 #ifndef __PIMS_INTERNAL_H__
 #define __PIMS_INTERNAL_H__
 
-#include <zmq.h>
-
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C"
 {
 #endif
@@ -31,10 +29,8 @@ extern "C"
 #define API __attribute__ ((visibility("default")))
 #endif
 
-#define PIMS_IPC_MONITOR_PATH       "monitor"
-#define PIMS_IPC_DEALER_PATH        "dealer"
-#define PIMS_IPC_MANAGER_PATH       "manager"
-#define PIMS_IPC_MONITOR2_PATH      "monitor2"
+#define MAX_EPOLL_EVENT 256
+
 #define PIMS_IPC_MODULE_INTERNAL    "pims_ipc_internal"
 #define PIMS_IPC_FUNCTION_CREATE    "create"
 #define PIMS_IPC_FUNCTION_DESTROY   "destroy"
@@ -42,35 +38,18 @@ extern "C"
 #define PIMS_IPC_CALL_ID_DESTROY    PIMS_IPC_MODULE_INTERNAL ":" PIMS_IPC_FUNCTION_DESTROY
 #define PIMS_IPC_MAKE_CALL_ID(module, function) g_strdup_printf("%s:%s", module, function)
 
-static inline int _pims_zmq_msg_recv(zmq_msg_t *msg, void *socket, int flags)
-{
-    int ret = -1;
+typedef struct {
+	unsigned int alloc_size;
+	unsigned int buf_size;
+	unsigned int free_size;
+	char *pos;
+	char *buf;
+	int flags;
+	unsigned int created:1;
+	unsigned int buf_alloced:1;
+} pims_ipc_data_s;
 
-    while (1)
-    {
-        ret = zmq_msg_recv(msg, socket, flags);
-        if (ret == -1 && errno == EINTR)
-            continue;
-        break;
-    }
-    return ret;
-}
-
-static inline int _pims_zmq_msg_send(zmq_msg_t *msg, void *socket, int flags)
-{
-    int ret = -1;
-
-    while (1)
-    {
-        ret = zmq_msg_send(msg, socket, flags);
-        if (ret == -1 && errno == EINTR)
-            continue;
-        break;
-    }
-    return ret;
-}
-
-#ifdef _cplusplus
+#ifdef __cplusplus
 }
 #endif
 

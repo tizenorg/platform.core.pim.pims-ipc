@@ -24,1238 +24,1482 @@
 #include <glib.h>
 #include <pthread.h>
 #include <stdint.h>
-#include <sys/types.h>
-#include <sys/stat.h>
+#include <poll.h>				// pollfds
+#include <fcntl.h>				//fcntl
+#include <unistd.h>
+#include <systemd/sd-daemon.h>
+#include <errno.h>
 
-#include <pims-internal.h>
-#include <pims-debug.h>
-#include <pims-socket.h>
-#include <pims-ipc-data.h>
-#include <pims-ipc-svc.h>
+#include <sys/stat.h>
+#include <sys/un.h>			// sockaddr_un
+#include <sys/ioctl.h>		// ioctl
+#include <sys/epoll.h>		// epoll
+#include <sys/eventfd.h>	// eventfd
+#include <sys/socket.h>		//socket
+#include <sys/types.h>
+
+#include "pims-internal.h"
+#include "pims-debug.h"
+#include "pims-socket.h"
+#include "pims-ipc-data.h"
+#include "pims-ipc-data-internal.h"
+#include "pims-ipc-svc.h"
 
 #define PIMS_IPC_WORKERS_DEFAULT_MAX_COUNT  2
 
-typedef struct
+typedef struct {
+	char *service;
+	gid_t group;
+	mode_t mode;
+
+	// callback functions
+	GHashTable *cb_table;			// call_id, cb_data
+
+	// Global socket info and epoll thread
+	int sockfd;
+	bool epoll_stop_thread;
+
+	/////////////////////////////////////////////
+	// router inproc eventfd
+	int router;
+	int delay_count;  // not need mutex
+	// epoll thread add client_fd, when receive, router read requests
+	GList *request_queue;	 // client_id lists to send request
+	pthread_mutex_t request_data_queue_mutex;
+	GHashTable *request_data_queue;  // key : client id, data : GList pims_ipc_raw_data_s (client_fd, seq_no, request(command), additional data...)
+	// router add client when receive connecting request, remove client when disconneting request in router thread
+	// manager remove client when terminating client without disconnect request in router thread
+	GHashTable *client_worker_map;		 // key : client_id, worker_fd, not need mutex
+	GList *client_id_fd_map;		 // pims_ipc_client_map_s
+	//key :client_id(pid:seq_no), data : client_fd
+
+	/////////////////////////////////////////////
+	pthread_mutex_t task_fds_mutex;
+	// when starting worker thread, register fd
+	// when endting worker thread, deregister fd
+	GHashTable *task_fds;	 // worker_fd - worker data (worker fd, client_fd, request queue(GList), stop_thread)
+	int workers_max_count;
+
+	/////////////////////////////////////////////
+	// manager inproc eventfd
+	int manager;
+	// write by new worker thread, read by manager in router thread, need mutex
+	pthread_mutex_t manager_queue_from_worker_mutex;
+	GList *manager_queue_from_worker;	 // worker_fd => add to workers
+	// write in epoll thread(for dead client), read by manager in router thread, need mutex
+	pthread_mutex_t manager_queue_from_epoll_mutex;
+	GList *manager_queue_from_epoll; // cliend_fd => find worker_fd => add to idle workers
+	// managed by manager, router find idle worker when connecting new client in router thread => remove from idle workers
+	GList *workers;		 // worker_fd list, not need mutex
+	/////////////////////////////////////////////
+} pims_ipc_svc_s;
+
+typedef struct {
+	char *service;
+	gid_t group;
+	mode_t mode;
+
+	int publish_sockfd;
+	bool epoll_stop_thread;
+	pthread_mutex_t subscribe_fds_mutex;
+	GList *subscribe_fds;		// cliend fd list
+} pims_ipc_svc_for_publish_s;
+
+typedef struct {
+	int fd;
+	char *id;
+}pims_ipc_client_map_s;
+
+typedef struct {
+	pims_ipc_svc_call_cb callback;
+	void * user_data;
+} pims_ipc_svc_cb_s;
+
+typedef struct {
+	pims_ipc_svc_client_disconnected_cb callback;
+	void * user_data;
+} pims_ipc_svc_client_disconnected_cb_t;
+
+typedef struct {
+	int fd;
+	int worker_id;	// pthrad_self()
+	int client_fd;
+	bool stop_thread;
+	GList *queue;		// pims_ipc_raw_data_s list
+	pthread_mutex_t queue_mutex;
+} pims_ipc_worker_data_s;
+
+typedef struct{
+	char *client_id;
+	unsigned int client_id_len;
+	unsigned int seq_no;
+	char *call_id;
+	unsigned int call_id_len;
+	unsigned int is_data;
+	unsigned int data_len;
+	char *data;
+}pims_ipc_raw_data_s;
+
+typedef struct {
+	int client_fd;
+	int request_count;
+	GList *raw_data;		// pims_ipc_raw_data_s list
+	pthread_mutex_t raw_data_mutex;
+}pims_ipc_request_s;
+
+static pims_ipc_svc_s *_g_singleton = NULL;
+static pims_ipc_svc_for_publish_s *_g_singleton_for_publish = NULL;
+
+static __thread pims_ipc_svc_client_disconnected_cb_t _client_disconnected_cb = {NULL, NULL};
+
+static void __free_raw_data(pims_ipc_raw_data_s *data)
 {
-    char *service;
-    gid_t group;
-    mode_t mode;
-    GHashTable *cb_table;
-    GHashTable *client_table;
-    GList *workers;
-    GList *requests;
-    int workers_max_count;
-    void* context;
-    void* router;
-    void* worker;
-    void* manager;
-    void* monitor;
-} pims_ipc_svc_t;
+	if (!data) return;
 
-typedef struct
+	free(data->client_id);
+	free(data->call_id);
+	free(data->data);
+	free(data);
+}
+
+static void __worker_data_free(gpointer data)
 {
-    char *service;
-    gid_t group;
-    mode_t mode;
-    void* context;
-    void* publisher;
-} pims_ipc_svc_for_publish_t;
+	pims_ipc_worker_data_s *worker_data = (pims_ipc_worker_data_s*)data;
 
-
-typedef struct
-{
-    pims_ipc_svc_call_cb callback;
-    void * user_data;
-} pims_ipc_svc_cb_t;
-
-static pims_ipc_svc_t *_g_singleton = NULL;
-static pims_ipc_svc_for_publish_t *_g_singleton_for_publish = NULL;
-
-#define PIMS_IPC_STRING_WORKER_ID_SIZE  10
-static char* __get_string_worker_id(int worker_id, char *string_worker_id)
-{
-    snprintf(string_worker_id, PIMS_IPC_STRING_WORKER_ID_SIZE, "%08x00", worker_id);
-    string_worker_id[PIMS_IPC_STRING_WORKER_ID_SIZE] = 0x0;
-
-    return string_worker_id;
+	pthread_mutex_lock(&worker_data->queue_mutex);
+	if (worker_data->queue) {
+		GList *cursor = g_list_first(worker_data->queue);
+		while(cursor) {
+			GList *l = cursor;
+			pims_ipc_raw_data_s *data = l->data;
+			cursor = g_list_next(cursor);
+			worker_data->queue = g_list_remove_link(worker_data->queue, l);
+			g_list_free(l);
+			__free_raw_data(data);
+		}
+	}
+	pthread_mutex_unlock(&worker_data->queue_mutex);
+	free(worker_data);
 }
 
 API int pims_ipc_svc_init(char *service, gid_t group, mode_t mode)
 {
-    if (_g_singleton)
-    {
-        ERROR("Already exist");
-        return -1;
-    }
+	if (_g_singleton) {
+		ERROR("Already exist");
+		return -1;
+	}
 
-    _g_singleton = g_new0(pims_ipc_svc_t, 1);
-    _g_singleton->service = g_strdup(service);
-    _g_singleton->group = group;
-    _g_singleton->mode = mode;
-    _g_singleton->workers_max_count = PIMS_IPC_WORKERS_DEFAULT_MAX_COUNT;
-    _g_singleton->cb_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
-    ASSERT(_g_singleton->cb_table);
-    _g_singleton->client_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-    ASSERT(_g_singleton->client_table);
+	_g_singleton = g_new0(pims_ipc_svc_s, 1);
+	_g_singleton->service = g_strdup(service);
+	_g_singleton->group = group;
+	_g_singleton->mode = mode;
+	_g_singleton->workers_max_count = PIMS_IPC_WORKERS_DEFAULT_MAX_COUNT;
+	_g_singleton->cb_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	ASSERT(_g_singleton->cb_table);
 
-    return 0;
-}
+	pthread_mutex_init(&_g_singleton->request_data_queue_mutex, 0);
+	_g_singleton->request_queue = NULL;
+	_g_singleton->request_data_queue = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);	// client_id - pims_ipc_raw_data_s
+	ASSERT(_g_singleton->request_data_queue);
+	_g_singleton->client_worker_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);		// client id - worker_fd mapping
+	ASSERT(_g_singleton->client_worker_map);
+	_g_singleton->delay_count = 0;
 
-static void __free_zmq_msg(gpointer data)
-{
-    zmq_msg_t *lpzmsg = data;
+	pthread_mutex_init(&_g_singleton->task_fds_mutex, 0);
+	_g_singleton->task_fds = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, __worker_data_free);		// pims_ipc_worker_data_s
+	ASSERT(_g_singleton->task_fds);
 
-    if (lpzmsg)
-    {
-        zmq_msg_close(lpzmsg);
-        g_free(lpzmsg);
-    }
+	pthread_mutex_init(&_g_singleton->manager_queue_from_epoll_mutex, 0);
+	_g_singleton->manager_queue_from_epoll = NULL;
+
+	pthread_mutex_init(&_g_singleton->manager_queue_from_worker_mutex, 0);
+	_g_singleton->manager_queue_from_worker = NULL;
+	_g_singleton->workers = NULL;
+
+	_g_singleton->epoll_stop_thread = false;
+
+	return 0;
 }
 
 API int pims_ipc_svc_deinit(void)
 {
-    if (!_g_singleton)
-        return -1;
+	if (!_g_singleton)
+		return -1;
 
-    g_free(_g_singleton->service);
-    g_hash_table_destroy(_g_singleton->cb_table);
-    g_hash_table_destroy(_g_singleton->client_table);
-    g_list_free(_g_singleton->workers);
-    g_list_free_full(_g_singleton->requests, __free_zmq_msg);
-    g_free(_g_singleton);
-    _g_singleton = NULL;
+	g_free(_g_singleton->service);
+	g_hash_table_destroy(_g_singleton->cb_table);
 
-    return 0;
+	pthread_mutex_destroy(&_g_singleton->request_data_queue_mutex);
+	g_hash_table_destroy(_g_singleton->client_worker_map);
+	g_hash_table_destroy(_g_singleton->request_data_queue);
+	g_list_free_full(_g_singleton->request_queue, g_free);
+
+	pthread_mutex_destroy(&_g_singleton->task_fds_mutex);
+	g_hash_table_destroy(_g_singleton->task_fds);
+
+	pthread_mutex_destroy(&_g_singleton->manager_queue_from_epoll_mutex);
+	g_list_free_full(_g_singleton->manager_queue_from_epoll, g_free);
+	pthread_mutex_destroy(&_g_singleton->manager_queue_from_worker_mutex);
+	g_list_free(_g_singleton->manager_queue_from_worker);
+
+	GList *cursor = g_list_first(_g_singleton->client_id_fd_map);
+	while(cursor) {
+		pims_ipc_client_map_s *client = cursor->data;
+		_g_singleton->client_id_fd_map = g_list_remove_link(_g_singleton->client_id_fd_map, cursor);			//free(client_id);
+		free(client->id);
+		free(client);
+		g_list_free(cursor);
+		cursor = g_list_first(_g_singleton->client_id_fd_map);
+	}
+	g_list_free(_g_singleton->client_id_fd_map);
+
+	g_list_free(_g_singleton->workers);
+	g_free(_g_singleton);
+	_g_singleton = NULL;
+
+	return 0;
 }
 
 API int pims_ipc_svc_register(char *module, char *function, pims_ipc_svc_call_cb callback, void *userdata)
 {
-    pims_ipc_svc_cb_t *cb_data = NULL;
-    gchar *call_id = NULL;
+	pims_ipc_svc_cb_s *cb_data = NULL;
+	gchar *call_id = NULL;
 
-    if (!module || !function || !callback)
-    {
-        ERROR("Invalid argument");
-        return -1;
-    }
-    cb_data = g_new0(pims_ipc_svc_cb_t, 1);
-    call_id = PIMS_IPC_MAKE_CALL_ID(module, function);
+	if (!module || !function || !callback) {
+		ERROR("Invalid argument");
+		return -1;
+	}
+	cb_data = g_new0(pims_ipc_svc_cb_s, 1);
+	call_id = PIMS_IPC_MAKE_CALL_ID(module, function);
 
-    VERBOSE("register cb id[%s]", call_id);
-    cb_data->callback = callback;
-    cb_data->user_data = userdata;
-    g_hash_table_insert(_g_singleton->cb_table, call_id, cb_data);
+	VERBOSE("register cb id[%s]", call_id);
+	cb_data->callback = callback;
+	cb_data->user_data = userdata;
+	g_hash_table_insert(_g_singleton->cb_table, call_id, cb_data);
 
-    return 0;
+	return 0;
 }
 
 API int pims_ipc_svc_init_for_publish(char *service, gid_t group, mode_t mode)
 {
-    if (_g_singleton_for_publish)
-    {
-        ERROR("Already exist");
-        return -1;
-    }
+	if (_g_singleton_for_publish) {
+		ERROR("Already exist");
+		return -1;
+	}
 
-    _g_singleton_for_publish = g_new0(pims_ipc_svc_for_publish_t, 1);
-    _g_singleton_for_publish->service = g_strdup(service);
-    _g_singleton_for_publish->group = group;
-    _g_singleton_for_publish->mode = mode;
+	_g_singleton_for_publish = g_new0(pims_ipc_svc_for_publish_s, 1);
+	_g_singleton_for_publish->service = g_strdup(service);
+	_g_singleton_for_publish->group = group;
+	_g_singleton_for_publish->mode = mode;
+	_g_singleton_for_publish->subscribe_fds = NULL;
 
-    return 0;
+	pthread_mutex_init(&_g_singleton_for_publish->subscribe_fds_mutex, 0);
+
+	return 0;
 }
 
 API int pims_ipc_svc_deinit_for_publish(void)
 {
-    if (!_g_singleton_for_publish)
-        return -1;
+	if (!_g_singleton_for_publish)
+		return -1;
 
-    g_free(_g_singleton_for_publish->service);
-    g_free(_g_singleton_for_publish);
-    _g_singleton_for_publish = NULL;
+	pthread_mutex_destroy(&_g_singleton_for_publish->subscribe_fds_mutex);
+	g_list_free(_g_singleton_for_publish->subscribe_fds);
 
-    return 0;
-}
+	g_free(_g_singleton_for_publish->service);
+	g_free(_g_singleton_for_publish);
+	_g_singleton_for_publish = NULL;
 
-static void __pims_ipc_svc_data_free_cb(void *data, void *hint)
-{
-    if (hint)
-        g_free(hint);
+	return 0;
 }
 
 API int pims_ipc_svc_publish(char *module, char *event, pims_ipc_data_h data)
 {
-    pims_ipc_svc_for_publish_t *ipc_svc = _g_singleton_for_publish;
-    gboolean is_valid = FALSE;
-    gchar *call_id = PIMS_IPC_MAKE_CALL_ID(module, event);
+	pims_ipc_svc_for_publish_s *ipc_svc = _g_singleton_for_publish;
+	gboolean is_valid = FALSE;
+	gchar *call_id = PIMS_IPC_MAKE_CALL_ID(module, event);
+	pims_ipc_data_s *data_in = (pims_ipc_data_s*)data;
+	unsigned int call_id_len = strlen(call_id);
+	unsigned int is_data = FALSE;
 
-    // init messages
-    zmq_msg_t call_id_msg;
-    zmq_msg_t data_msg;
+	do {
+		// make publish data
+		unsigned int len = sizeof(unsigned int)						// total size
+			+ call_id_len + sizeof(unsigned int)			// call_id
+			+ sizeof(unsigned int);							// is data
+		unsigned int total_len = len;
 
-    zmq_msg_init_data(&call_id_msg, call_id, strlen(call_id) + 1, __pims_ipc_svc_data_free_cb, call_id);
-    VERBOSE("call id = %s", (char*)zmq_msg_data(&call_id_msg));
+		if (data_in) {
+			is_data = TRUE;
+			len += sizeof(unsigned int);
+			total_len = len + data_in->buf_size;			// data
+		}
 
-    zmq_msg_init(&data_msg);
+		char buf[len+1];
+		int length = 0;
+		memset(buf, 0x0, len+1);
 
-    do {
-        if (data == NULL)
-        {
-            // send call id
-            if (_pims_zmq_msg_send(&call_id_msg, ipc_svc->publisher, 0) == -1)
-            {
-                ERROR("send error : %s", zmq_strerror(errno));
-                break;
-            }
-        }
-        else
-        {
-            // send call id
-            if (_pims_zmq_msg_send(&call_id_msg, ipc_svc->publisher, ZMQ_SNDMORE) == -1)
-            {
-                ERROR("send error : %s", zmq_strerror(errno));
-                break;
-            }
+		// total_size
+		memcpy(buf, (void*)&total_len, sizeof(unsigned int));
+		length += sizeof(unsigned int);
 
-            // marshal data
-            if (pims_ipc_data_marshal_with_zmq(data, &data_msg) != 0)
-            {
-                ERROR("marshal error");
-                break;
-            }
+		// call_id
+		memcpy(buf+length, (void*)&(call_id_len), sizeof(unsigned int));
+		length += sizeof(unsigned int);
+		memcpy(buf+length, (void*)(call_id), call_id_len);
+		length += call_id_len;
+		g_free(call_id);
 
-            VERBOSE("the size of sending data = %d", zmq_msg_size(&data_msg));
+		// is_data
+		memcpy(buf+length, (void*)&(is_data), sizeof(unsigned int));
+		length += sizeof(unsigned int);
 
-            // send data
-            if (_pims_zmq_msg_send(&data_msg, ipc_svc->publisher, 0) == -1)
-            {
-                ERROR("send error : %s", zmq_strerror(errno));
-                break;
-            }
-        }
+		// data
+		if (is_data) {
+			memcpy(buf+length, (void*)&(data_in->buf_size), sizeof(unsigned int));
+			length += sizeof(unsigned int);
+		}
 
-        is_valid = TRUE;
-    } while (0);
+		// Publish to clients
+		pthread_mutex_lock(&ipc_svc->subscribe_fds_mutex);
+		GList *cursor = g_list_first(ipc_svc->subscribe_fds);
+		int ret = 0;
+		while(cursor) {
+			int fd = (int)cursor->data;
+			ret = socket_send(fd, buf, length);
+			if (ret < 0) {
+				ERROR("socket_send publish error : %d", ret);
+			}
 
-    zmq_msg_close(&call_id_msg);
-    zmq_msg_close(&data_msg);
+			if (is_data) {
+				ret = socket_send_data(fd, data_in->buf, data_in->buf_size);
+				if (ret < 0) {
+					ERROR("socket_send_data publish error : %d", ret);
+				}
+			}
+			cursor = g_list_next(cursor);
+		}
+		pthread_mutex_unlock(&ipc_svc->subscribe_fds_mutex);
 
-    if (is_valid == FALSE)
-        return -1;
-    return 0;
+		is_valid = TRUE;
+	} while (0);
+
+	if (is_valid == FALSE)
+		return -1;
+	return 0;
 }
 
 static void __run_callback(int worker_id, char *call_id, pims_ipc_data_h dhandle_in, pims_ipc_data_h *dhandle_out)
 {
-    pims_ipc_svc_cb_t *cb_data = NULL;
+	pims_ipc_svc_cb_s *cb_data = NULL;
 
-    VERBOSE("Call id [%s]", call_id);
+	VERBOSE("Call id [%s]", call_id);
 
-    cb_data = (pims_ipc_svc_cb_t*)g_hash_table_lookup(_g_singleton->cb_table, call_id);
-    if (cb_data == NULL)
-    {
-        VERBOSE("unable to find %s", call_id);
-        return;
-    }
-    
-    cb_data->callback((pims_ipc_h)worker_id, dhandle_in, dhandle_out, cb_data->user_data);
+	cb_data = (pims_ipc_svc_cb_s*)g_hash_table_lookup(_g_singleton->cb_table, call_id);
+	if (cb_data == NULL) {
+		VERBOSE("unable to find %s", call_id);
+		return;
+	}
+
+	cb_data->callback((pims_ipc_h)worker_id, dhandle_in, dhandle_out, cb_data->user_data);
 }
 
-static int __process_worker_task(int worker_id, void *context, void *worker)
+static void __make_raw_data(const char *call_id, int seq_no, pims_ipc_data_h data, pims_ipc_raw_data_s**out)
 {
-    gboolean is_create = FALSE;
-    gboolean is_destroy = FALSE;
-    char *pid = NULL;
-    char *call_id = NULL;
-    int64_t more = 0;
-    size_t more_size = sizeof(more);
-    pims_ipc_data_h dhandle_in = NULL;
-    pims_ipc_data_h dhandle_out = NULL;
+	pims_ipc_raw_data_s *raw_data = NULL;
+	raw_data = (pims_ipc_raw_data_s*)calloc(1, sizeof(pims_ipc_raw_data_s));
+	pims_ipc_data_s *data_in = (pims_ipc_data_s*)data;
 
-    VERBOSE("");
+	raw_data->call_id = strdup(call_id);
+	raw_data->call_id_len = strlen(raw_data->call_id);
+	raw_data->seq_no = seq_no;
 
-#ifdef _TEST
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    printf("worker time[%lu:%lu]\n", tv.tv_sec, tv.tv_usec);
-#endif
-
-    zmq_msg_t pid_msg;
-    zmq_msg_t sequence_no_msg;
-    zmq_msg_t call_id_msg;
-    zmq_msg_t data_msg;
-    
-    zmq_msg_init(&pid_msg);
-    zmq_msg_init(&sequence_no_msg);
-    zmq_msg_init(&call_id_msg);
-    zmq_msg_init(&data_msg);
-
-    do {
-        // read pid
-        if (_pims_zmq_msg_recv(&pid_msg, worker, 0) == -1)
-        {
-            ERROR("recv error : %s", zmq_strerror(errno));
-            break;
-        }
-
-        // read sequence no
-        if (_pims_zmq_msg_recv(&sequence_no_msg, worker, 0) == -1)
-        {
-            ERROR("recv error : %s", zmq_strerror(errno));
-            break;
-        }
-
-        // read call id
-        if (_pims_zmq_msg_recv(&call_id_msg, worker, 0) == -1)
-        {
-            ERROR("recv error : %s", zmq_strerror(errno));
-            break;
-        }
-
-        more = 0;
-        zmq_getsockopt(worker, ZMQ_RCVMORE, &more, &more_size);
-        if (more)
-        {
-            // read data
-            if (_pims_zmq_msg_recv(&data_msg, worker, 0) == -1)
-            {
-                ERROR("recv error : %s", zmq_strerror(errno));
-                break;
-            }
-
-            dhandle_in = pims_ipc_data_unmarshal_with_zmq(&data_msg);
-            if (dhandle_in == NULL)
-            {
-                ERROR("unmarshal error");
-                break;
-            }
-        }
-
-        pid = (char*)zmq_msg_data(&pid_msg);
-        ASSERT(pid);
-        VERBOSE("client pid = %s", pid);
-
-        call_id = (char*)zmq_msg_data(&call_id_msg);
-        ASSERT(call_id);
-        VERBOSE("call_id = [%s]", call_id);
-
-        // call a callback function with call id and data
-        if (strcmp(PIMS_IPC_CALL_ID_CREATE, call_id) == 0)
-        {
-            is_create = TRUE;
-        }
-        else if (strcmp(PIMS_IPC_CALL_ID_DESTROY, call_id) == 0)
-        {
-            is_destroy = TRUE;
-        }
-        else
-        {
-            __run_callback(worker_id, call_id, dhandle_in, &dhandle_out);
-        }
-
-        // send pid
-        if (_pims_zmq_msg_send(&pid_msg, worker, ZMQ_SNDMORE) == -1)
-        {
-            ERROR("send error : %s", zmq_strerror(errno));
-            break;
-        }
-
-        // send empty 
-        zmq_msg_t empty_msg;
-        zmq_msg_init_size(&empty_msg, 0);
-        if (_pims_zmq_msg_send(&empty_msg, worker, ZMQ_SNDMORE) == -1)
-        {
-            ERROR("send error : %s", zmq_strerror(errno));
-            zmq_msg_close(&empty_msg);
-            break;
-        }
-        zmq_msg_close(&empty_msg);
-
-        // send sequence no
-        if (_pims_zmq_msg_send(&sequence_no_msg, worker, ZMQ_SNDMORE) == -1)
-        {
-            ERROR("send error : %s", zmq_strerror(errno));
-            break;
-        }
-
-        if (dhandle_out)
-        {
-            // send call id
-            if (_pims_zmq_msg_send(&call_id_msg, worker, ZMQ_SNDMORE) == -1)
-            {
-                ERROR("send error : %s", zmq_strerror(errno));
-                break;
-            }
-
-            // marshal data
-            zmq_msg_close(&data_msg);
-            zmq_msg_init(&data_msg);
-            if (pims_ipc_data_marshal_with_zmq(dhandle_out, &data_msg) != 0)
-            {
-                ERROR("marshal error");
-                break;
-            }
-
-            // send data
-            VERBOSE("the size of sending data = %d", zmq_msg_size(&data_msg));
-            if (_pims_zmq_msg_send(&data_msg, worker, 0) == -1)
-            {
-                ERROR("send error : %s", zmq_strerror(errno));
-                break;
-            }
-        }
-        else
-        {
-            // send call id
-            if (_pims_zmq_msg_send(&call_id_msg, worker, 0) == -1)
-            {
-                ERROR("send error : %s", zmq_strerror(errno));
-                break;
-            }
-        }
-    } while (0);
-
-    zmq_msg_close(&pid_msg);
-    zmq_msg_close(&sequence_no_msg);
-    zmq_msg_close(&call_id_msg);
-    zmq_msg_close(&data_msg);
-
-    if (dhandle_in)
-        pims_ipc_data_destroy(dhandle_in);
-    if (dhandle_out)
-        pims_ipc_data_destroy(dhandle_out);
-
-    VERBOSE("responsed");
-
-#ifdef _TEST
-    gettimeofday(&tv, NULL);
-    printf("worker time[%lu:%lu]\n", tv.tv_sec, tv.tv_usec);
-#endif
-
-    if (is_destroy)
-        return -1;
-    return 0;
+	if (data_in && data_in->buf_size > 0) {
+		raw_data->is_data = TRUE;
+		raw_data->data = calloc(1, data_in->buf_size+1);
+		memcpy(raw_data->data, data_in->buf, data_in->buf_size);
+		raw_data->data_len = data_in->buf_size;
+	}
+	else {
+		raw_data->is_data = FALSE;
+		raw_data->data_len = 0;
+		raw_data->data = NULL;
+	}
+	*out = raw_data;
+	return;
 }
 
-static int __process_manager_task(int worker_id, void *context, void *manager)
+static int __send_raw_data(int fd, const char *client_id, pims_ipc_raw_data_s *data)
 {
-    VERBOSE("");
+	int ret = 0;
+	unsigned int client_id_len = strlen(client_id);
 
-    // read pid
-    zmq_msg_t pid_msg;
-    zmq_msg_init(&pid_msg);
-    if (_pims_zmq_msg_recv(&pid_msg, manager, 0) == -1)
-    {
-        ERROR("recv error : %s", zmq_strerror(errno));
-        zmq_msg_close(&pid_msg);
-        return -1;
-    }
-    zmq_msg_close(&pid_msg);
+	if (!data) {
+		INFO("No data to send NULL\n");
+		return -1;
+	}
 
-    return -1;
+	unsigned int len = sizeof(unsigned int)			// total size
+		+ client_id_len + sizeof(unsigned int)		// client_id
+		+ sizeof(unsigned int)							// seq_no
+		+ data->call_id_len + sizeof(unsigned int)	// call_id
+		+ sizeof(unsigned int);							// is data
+	unsigned int total_len = len;
+
+	if (data->is_data) {
+		len += sizeof(unsigned int); // data
+		total_len = len + data->data_len;		// data
+	}
+
+	INFO("client_id: %s, call_id : %s, seq no :%d, len:%d, total len :%d", client_id, data->call_id, data->seq_no, len, total_len);
+
+	char buf[len+1];
+
+	int length = 0;
+	memset(buf, 0x0, len+1);
+
+	// total_len
+	memcpy(buf, (void*)&total_len, sizeof(unsigned int));
+	length += sizeof(unsigned int);
+
+	// client_id
+	memcpy(buf+length, (void*)&(client_id_len), sizeof(unsigned int));
+	length += sizeof(unsigned int);
+	memcpy(buf+length, (void*)(client_id), client_id_len);
+	length += client_id_len;
+
+	// seq_no
+	memcpy(buf+length, (void*)&(data->seq_no), sizeof(unsigned int));
+	length += sizeof(unsigned int);
+
+	// call id
+	memcpy(buf+length, (void*)&(data->call_id_len), sizeof(unsigned int));
+	length += sizeof(unsigned int);
+	memcpy(buf+length, (void*)(data->call_id), data->call_id_len);
+	length += data->call_id_len;
+
+	// is_data
+	memcpy(buf+length, (void*)&(data->is_data), sizeof(unsigned int));
+	length += sizeof(unsigned int);
+
+	if (data->is_data) {
+		memcpy(buf+length, (void*)&(data->data_len), sizeof(unsigned int));
+		length += sizeof(unsigned int);
+		ret = socket_send(fd, buf, length);
+
+		// send data
+		if (ret > 0)
+			ret += socket_send_data(fd, data->data, data->data_len);
+	}
+	else
+		ret = socket_send(fd, buf, length);
+
+	return ret;
 }
 
-static void* __worker_loop(void *args)
+static gboolean __worker_raw_data_pop(pims_ipc_worker_data_s *worker, pims_ipc_raw_data_s **data)
 {
-    void *context = args;
-    int worker_id = (int)pthread_self();
-    char *path = NULL;
+	if (!worker)
+		return FALSE;
 
-    void *worker = zmq_socket(context, ZMQ_DEALER);
-    if (!worker)
-    {
-        ERROR("socket error : %s", zmq_strerror(errno));
-        return NULL;
-    }
-    char string_worker_id[PIMS_IPC_STRING_WORKER_ID_SIZE + 1] = "";
-    if (zmq_setsockopt(worker, ZMQ_IDENTITY, __get_string_worker_id(worker_id, string_worker_id),
-                PIMS_IPC_STRING_WORKER_ID_SIZE) != 0)
-    {
-        ERROR("setsockopt error : %s", zmq_strerror(errno));
-        zmq_close(worker);
-        return NULL;
-    }
-    path = g_strdup_printf("inproc://%s-%s", _g_singleton->service, PIMS_IPC_DEALER_PATH);
-    if (zmq_connect(worker, path) != 0)
-    {
-        ERROR("connect error : %s", zmq_strerror(errno));
-        g_free(path);
-        zmq_close(worker);
-        return NULL;
-    }
-    g_free(path);
+	pthread_mutex_lock(&worker->queue_mutex);
+	if (!worker->queue) {
+		pthread_mutex_unlock(&worker->queue_mutex);
+		*data = NULL;
+		return FALSE;
+	}
 
-    // send the ID of a worker to the manager
-    void *manager = zmq_socket(context, ZMQ_DEALER);
-    if (!manager)
-    {
-        ERROR("socket error : %s", zmq_strerror(errno));
-        zmq_close(worker);
-        return NULL;
-    }
-    if (zmq_setsockopt(manager, ZMQ_IDENTITY, __get_string_worker_id(worker_id, string_worker_id),
-                PIMS_IPC_STRING_WORKER_ID_SIZE) != 0)
-    {
-        ERROR("setsockopt error : %s", zmq_strerror(errno));
-        zmq_close(manager);
-        zmq_close(worker);
-        return NULL;
-    }
-    path = g_strdup_printf("inproc://%s-%s", _g_singleton->service, PIMS_IPC_MANAGER_PATH);
-    if (zmq_connect(manager, path) != 0)
-    {
-        ERROR("connect error : %s", zmq_strerror(errno));
-        g_free(path);
-        zmq_close(manager);
-        zmq_close(worker);
-        return NULL;
-    }
-    g_free(path);
+	*data = g_list_first(worker->queue)->data;
+	worker->queue = g_list_delete_link(worker->queue, g_list_first(worker->queue));
+	pthread_mutex_unlock(&worker->queue_mutex);
 
-    VERBOSE("starting worker id: %x", worker_id);
-    zmq_msg_t message;
-    zmq_msg_init_size(&message, sizeof(int));
-    memcpy(zmq_msg_data(&message), &worker_id, sizeof(int));
-    if (_pims_zmq_msg_send(&message, manager, 0) == -1)
-    {
-        ERROR("send error : %s", zmq_strerror(errno));
-        zmq_msg_close(&message);
-        zmq_close(manager);
-        zmq_close(worker);
-        return NULL;
-    }
-    zmq_msg_close(&message);
-
-    // poll all sockets
-    while (1)
-    {
-        zmq_pollitem_t items[] = {
-            {worker, 0, ZMQ_POLLIN, 0},
-            {manager, 0, ZMQ_POLLIN, 0}
-        };
-
-        if (zmq_poll(items, 2, -1) == -1)
-        {
-            if (errno == EINTR)
-                continue;
-
-            ERROR("poll error : %s", zmq_strerror(errno));
-            break;
-        }
-
-        if (items[0].revents & ZMQ_POLLIN)
-        {
-            if (__process_worker_task(worker_id, context, worker) != 0)
-                break;
-        }
-
-        if (items[1].revents & ZMQ_POLLIN)
-        {
-            if (__process_manager_task(worker_id, context, manager) != 0)
-                break;
-        }
-    }
-
-    VERBOSE("terminating worker id: %x", worker_id);
-
-    zmq_close(manager);
-    zmq_close(worker);
-    return NULL;
+	return TRUE;
 }
 
-static void __launch_worker(void *(*start_routine) (void *), void *context)
+static void* __worker_loop(void *data)
 {
-    pthread_t worker;
-    pthread_attr_t attr;
+	int ret;
+	int worker_id;
+	int worker_fd;
+	pims_ipc_svc_s *ipc_svc = (pims_ipc_svc_s*)data;
+	pims_ipc_worker_data_s *worker_data;
+	bool disconnected = false;
 
-    // set kernel thread
-    pthread_attr_init(&attr);
-    pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM);
+	worker_fd = eventfd(0, 0);
+	if (worker_fd == -1)
+		return NULL;
+	worker_id = (int)pthread_self();
 
-    pthread_create(&worker, &attr, start_routine, context);
-    // detach this thread
-    pthread_detach(worker);
+	worker_data = calloc(1, sizeof(pims_ipc_worker_data_s));
+	worker_data->fd = worker_fd;
+	worker_data->worker_id = worker_id;
+	worker_data->client_fd = -1;
+	worker_data->stop_thread = false;
+	pthread_mutex_init(&worker_data->queue_mutex, 0);
+
+	pthread_mutex_lock(&ipc_svc->task_fds_mutex);
+	g_hash_table_insert(ipc_svc->task_fds, GINT_TO_POINTER(worker_fd), worker_data);
+	pthread_mutex_unlock(&ipc_svc->task_fds_mutex);
+
+	pthread_mutex_lock(&ipc_svc->manager_queue_from_worker_mutex);
+	ipc_svc->manager_queue_from_worker = g_list_append(ipc_svc->manager_queue_from_worker, (void*)worker_fd);
+	pthread_mutex_unlock(&ipc_svc->manager_queue_from_worker_mutex);
+
+	write_command(ipc_svc->manager, 1);
+	DEBUG("worker register to manager : worker_id(%08x00), worker_fd(%d)\n", worker_id, worker_fd);
+
+	struct pollfd *pollfds = (struct pollfd*) malloc (1 * sizeof (struct pollfd));
+	pollfds[0].fd = worker_fd;
+	pollfds[0].events = POLLIN;
+
+	while (!worker_data->stop_thread) {
+		while(1) {
+			if (worker_data->stop_thread)
+				break;
+			ret = poll(pollfds, 1, 3000);	// waiting command from router
+			if (ret == -1 && errno == EINTR) {
+				continue;
+			}
+			break;
+		}
+
+		if (worker_data->stop_thread)
+			break;
+
+		if (ret > 0) {
+			pims_ipc_raw_data_s *raw_data = NULL;
+			pims_ipc_raw_data_s *result = NULL;
+
+			if (pollfds[0].revents & POLLIN) {
+				uint64_t dummy;
+				read_command(pollfds[0].fd, &dummy);
+				if (__worker_raw_data_pop(worker_data, &raw_data)) {
+					pims_ipc_data_h data_in = NULL;
+					pims_ipc_data_h data_out = NULL;
+
+					if (strcmp(PIMS_IPC_CALL_ID_CREATE, raw_data->call_id) == 0) {
+
+					}
+					else if (strcmp(PIMS_IPC_CALL_ID_DESTROY, raw_data->call_id) == 0) {
+						disconnected = true;
+					}
+					else {
+						data_in = pims_ipc_data_steal_unmarshal(raw_data->data, raw_data->data_len);
+						raw_data->data = NULL;
+						raw_data->data_len = 0;
+						raw_data->is_data = false;
+						__run_callback(worker_id, raw_data->call_id, data_in, &data_out);
+						pims_ipc_data_destroy(data_in);
+					}
+
+					if (data_out) {
+						__make_raw_data(raw_data->call_id, raw_data->seq_no, data_out, &result);
+						pims_ipc_data_destroy(data_out);
+					}
+					else
+						__make_raw_data(raw_data->call_id, raw_data->seq_no, NULL, &result);
+
+					if (worker_data->client_fd != -1)
+						__send_raw_data(worker_data->client_fd, raw_data->client_id, result);
+					__free_raw_data(raw_data);
+					__free_raw_data(result);
+				}
+			}
+		}
+	}
+
+	if (!disconnected)
+		ERROR("client fd closed, worker_fd : %d", worker_fd);
+	INFO("task thread terminated --------------------------- (worker_fd : %d)", worker_fd);
+
+	pthread_mutex_lock(&ipc_svc->task_fds_mutex);
+	g_hash_table_remove(ipc_svc->task_fds, GINT_TO_POINTER(worker_fd));		// __worker_data_free will be called
+	pthread_mutex_unlock(&ipc_svc->task_fds_mutex);
+
+	close(worker_fd);
+	free ((void*)pollfds);
+
+	if (_client_disconnected_cb.callback)
+		_client_disconnected_cb.callback((pims_ipc_h)worker_id, _client_disconnected_cb.user_data);
+
+	return NULL;
+}
+
+static void __launch_thread(void *(*start_routine) (void *), void *data)
+{
+	pthread_t worker;
+	pthread_attr_t attr;
+
+	// set kernel thread
+	pthread_attr_init(&attr);
+	pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM);
+
+	pthread_create(&worker, &attr, start_routine, data);
+	// detach this thread
+	pthread_detach(worker);
 }
 
 static gboolean __is_worker_available()
 {
-    if (_g_singleton->workers)
-        return TRUE;
-    else
-        return FALSE;
+	if (_g_singleton->workers)
+		return TRUE;
+	else
+		return FALSE;
 }
 
-static int __get_worker(const char *pid, int *worker_id)
+static int __get_worker(const char *client_id, int *worker_id)
 {
-    ASSERT(pid);
-    ASSERT(worker_id);
+	ASSERT(client_id);
+	ASSERT(worker_id);
 
-    if (!__is_worker_available())
-    {
-        ERROR("There is no idle worker");
-        return -1;
-    }
-    *worker_id = (int)(g_list_first(_g_singleton->workers)->data);
-    _g_singleton->workers = g_list_delete_link(_g_singleton->workers,
-            g_list_first(_g_singleton->workers));
+	if (!__is_worker_available()) {
+		ERROR("There is no idle worker");
+		return -1;
+	}
+	*worker_id = (int)(g_list_first(_g_singleton->workers)->data);
+	_g_singleton->workers = g_list_delete_link(_g_singleton->workers,
+			g_list_first(_g_singleton->workers));
 
-    g_hash_table_insert(_g_singleton->client_table, g_strdup(pid), GINT_TO_POINTER(*worker_id));
+	g_hash_table_insert(_g_singleton->client_worker_map, g_strdup(client_id), GINT_TO_POINTER(*worker_id));
 
-    return 0;
+	return 0;
 }
 
-static int __find_worker(const char *pid, int *worker_id)
+static int __find_worker(const char *client_id, int *worker_fd)
 {
-    char *orig_pid = NULL;
+	char *orig_pid = NULL;
+	int fd;
 
-    ASSERT(pid);
-    ASSERT(worker_id);
-    
-    if (g_hash_table_lookup_extended(_g_singleton->client_table, pid,
-                (gpointer*)&orig_pid, (gpointer*)worker_id) == TRUE)
-    {
-        VERBOSE("found worker id for %s = %x", pid, *worker_id);
-        return 0;
-    }
-    else
-    {
-        VERBOSE("unable to find worker id for %s", pid);
-        return -1;
-    }
+	ASSERT(client_id);
+	ASSERT(worker_fd);
+
+	if (FALSE == g_hash_table_lookup_extended(_g_singleton->client_worker_map, client_id,
+				(gpointer*)&orig_pid, (gpointer*)&fd)) {
+		VERBOSE("unable to find worker id for %s", client_id);
+		return -1;
+	}
+
+	*worker_fd = GPOINTER_TO_INT(fd);
+	return 0;
 }
 
-static void __remove_worker(const char *pid)
+static bool __request_pop(pims_ipc_request_s *data_queue, pims_ipc_raw_data_s **data)
 {
-    g_hash_table_remove(_g_singleton->client_table, pid);
+	bool ret = false;
+	GList *cursor;
+
+	pthread_mutex_lock(&data_queue->raw_data_mutex);
+	cursor = g_list_first(data_queue->raw_data);
+	if (cursor) {
+		*data = cursor->data;
+		data_queue->raw_data = g_list_delete_link(data_queue->raw_data, cursor);
+		(data_queue->request_count)--;
+
+		ret = true;
+	}
+	else
+		*data = NULL;
+
+	pthread_mutex_unlock(&data_queue->raw_data_mutex);
+	return ret;
 }
 
-static void __terminate_worker(void *manager, int worker_id, const char *pid)
+static bool __worker_raw_data_push(pims_ipc_worker_data_s *worker_data, int client_fd, pims_ipc_raw_data_s *data)
 {
-    // send worker id
-    zmq_msg_t worker_id_msg;
-    zmq_msg_init_size(&worker_id_msg, PIMS_IPC_STRING_WORKER_ID_SIZE);
-    char string_worker_id[PIMS_IPC_STRING_WORKER_ID_SIZE + 1] = "";
-    memcpy(zmq_msg_data(&worker_id_msg), __get_string_worker_id(worker_id, string_worker_id),
-            PIMS_IPC_STRING_WORKER_ID_SIZE);
-    if (_pims_zmq_msg_send(&worker_id_msg, manager, ZMQ_SNDMORE) == -1)
-    {
-        ERROR("send error : %s", zmq_strerror(errno));
-        zmq_msg_close(&worker_id_msg);
-        return;
-    }
-    zmq_msg_close(&worker_id_msg);
+	pthread_mutex_lock(&worker_data->queue_mutex);
+	worker_data->queue = g_list_append(worker_data->queue, data);
+	worker_data->client_fd = client_fd;
+	pthread_mutex_unlock(&worker_data->queue_mutex);
 
-    // send pid
-    zmq_msg_t pid_msg;
-    zmq_msg_init_data(&pid_msg, (char*)pid, strlen(pid) + 1, NULL, NULL);
-    if (_pims_zmq_msg_send(&pid_msg, manager, 0) == -1)
-    {
-        ERROR("send error : %s", zmq_strerror(errno));
-        zmq_msg_close(&pid_msg);
-        return;
-    }
-    zmq_msg_close(&pid_msg);
+	return true;
 }
 
-static gboolean __enqueue_zmq_msg(zmq_msg_t *zmsg)
+static int __process_router_event(pims_ipc_svc_s *ipc_svc, gboolean for_queue)
 {
-    zmq_msg_t *lpzmsg = NULL;
-    
-    if (zmsg)
-    {
-        lpzmsg = g_new0(zmq_msg_t, 1);
-        zmq_msg_init(lpzmsg);
-        zmq_msg_copy(lpzmsg, zmsg);
-    }
-    _g_singleton->requests = g_list_append(_g_singleton->requests, lpzmsg);
+	gboolean is_valid = FALSE;
+	pims_ipc_request_s *data_queue = NULL;
+	GList *queue_cursor = NULL;
+	int worker_fd = 0;
+	char *client_id = NULL;
+	int *org_fd;
+	int ret;
 
-    return TRUE;
+	do {
+		pthread_mutex_lock(&ipc_svc->request_data_queue_mutex);
+		queue_cursor = g_list_first(ipc_svc->request_queue);
+		if (NULL == queue_cursor) {
+			pthread_mutex_unlock(&ipc_svc->request_data_queue_mutex);
+			return 0;
+		}
+		client_id = (char *)(queue_cursor->data);
+		ASSERT(client_id != NULL);
+		pthread_mutex_unlock(&ipc_svc->request_data_queue_mutex);
+
+		ret = g_hash_table_lookup_extended(ipc_svc->request_data_queue, (void*)client_id, (gpointer*)&org_fd, (gpointer*)&data_queue);
+
+		if (for_queue)
+			ipc_svc->delay_count--;
+
+		if (ret == TRUE && data_queue) {
+			int *org_fd;
+			pims_ipc_worker_data_s *worker_data = NULL;
+
+			pthread_mutex_lock(&data_queue->raw_data_mutex);
+			GList *cursor = g_list_first(data_queue->raw_data);
+			if (!cursor) {
+				pthread_mutex_unlock(&data_queue->raw_data_mutex);
+				break;
+			}
+
+			pims_ipc_raw_data_s *data = (pims_ipc_raw_data_s*)(cursor->data);
+			char *call_id = data->call_id;
+			int client_fd = data_queue->client_fd;
+
+			ASSERT(call_id != NULL);
+
+			VERBOSE("call_id = [%s]", call_id);
+			if (strcmp(PIMS_IPC_CALL_ID_CREATE, call_id) == 0) {
+				// Get a worker. If cannot get a worker, create a worker and enqueue a current request
+				__launch_thread(__worker_loop, ipc_svc);
+				if (__get_worker((const char*)client_id, &worker_fd) != 0) {
+					ipc_svc->delay_count++;
+					pthread_mutex_unlock(&data_queue->raw_data_mutex);
+					is_valid = TRUE;
+					break;
+				}
+			}
+			else {
+				// Find a worker
+				if (__find_worker((const char*)client_id, &worker_fd) != 0) {
+					ERROR("unable to find a worker");
+					pthread_mutex_unlock(&data_queue->raw_data_mutex);
+					break;
+				}
+			}
+			pthread_mutex_unlock(&data_queue->raw_data_mutex);
+
+			VERBOSE("routing client_id : %s, seq_no: %d, client_fd = %d, worker fd = %d", client_id, data->seq_no, client_fd, worker_fd);
+
+			if (worker_fd <= 0)
+				break;
+
+			pthread_mutex_lock(&ipc_svc->task_fds_mutex);
+			if (FALSE == g_hash_table_lookup_extended(ipc_svc->task_fds,
+						GINT_TO_POINTER(worker_fd), (gpointer*)&org_fd, (gpointer*)&worker_data)) {
+				ERROR("hash lookup fail : worker_fd (%d)", worker_fd);
+				pthread_mutex_unlock(&ipc_svc->task_fds_mutex);
+				break;
+			}
+
+			if (__request_pop(data_queue, &data)) {
+				__worker_raw_data_push(worker_data, client_fd, data);
+				write_command(worker_fd, 1);
+			}
+
+			pthread_mutex_unlock(&ipc_svc->task_fds_mutex);
+		}
+
+		pthread_mutex_lock(&ipc_svc->request_data_queue_mutex);
+		free(client_id);
+		ipc_svc->request_queue = g_list_delete_link(ipc_svc->request_queue, queue_cursor);
+		pthread_mutex_unlock(&ipc_svc->request_data_queue_mutex);
+
+		is_valid = TRUE;
+	} while (0);
+
+	if (is_valid == FALSE)
+		return -1;
+
+	return 1;
 }
 
-static gboolean __dequeue_zmq_msg(zmq_msg_t *zmsg)
+static int __process_manager_event(pims_ipc_svc_s *ipc_svc)
 {
-    zmq_msg_t *lpzmsg = NULL;
+	GList *cursor = NULL;
+	int worker_fd;
 
-    ASSERT(_g_singleton->requests);
-    lpzmsg = (zmq_msg_t*)(g_list_first(_g_singleton->requests)->data);
-    _g_singleton->requests = g_list_delete_link(_g_singleton->requests,
-            g_list_first(_g_singleton->requests));
+	// client socket terminated without disconnect request
+	pthread_mutex_lock(&ipc_svc->manager_queue_from_epoll_mutex);
+	if (ipc_svc->manager_queue_from_epoll) {
+		cursor = g_list_first(ipc_svc->manager_queue_from_epoll);
+		char *client_id = (char*)cursor->data;
+		__find_worker(client_id, &worker_fd);
 
-    if (lpzmsg == NULL)
-        return FALSE;
+		ipc_svc->manager_queue_from_epoll = g_list_delete_link(ipc_svc->manager_queue_from_epoll, cursor);
+		pthread_mutex_unlock(&ipc_svc->manager_queue_from_epoll_mutex);
 
-    zmq_msg_copy(zmsg, lpzmsg);
-    zmq_msg_close(lpzmsg);
-    g_free(lpzmsg);
+		// remove client_fd
+		g_hash_table_remove(ipc_svc->client_worker_map, client_id);
+		free(client_id);
 
-    return TRUE;
+		// stop worker thread
+		if (worker_fd) {
+			int *org_fd;
+			pims_ipc_worker_data_s *worker_data;
+
+			pthread_mutex_lock(&ipc_svc->task_fds_mutex);
+			if (FALSE == g_hash_table_lookup_extended(ipc_svc->task_fds,
+						GINT_TO_POINTER(worker_fd), (gpointer*)&org_fd, (gpointer*)&worker_data)) {
+				ERROR("g_hash_table_lookup_extended fail : worker_fd (%d)", worker_fd);
+				pthread_mutex_unlock(&ipc_svc->task_fds_mutex);
+				return -1;
+			}
+			worker_data->stop_thread = true;
+			worker_data->client_fd = -1;
+			pthread_mutex_unlock(&ipc_svc->task_fds_mutex);
+
+			write_command(worker_fd, 1);
+			VERBOSE("write command to worker terminate (worker_fd : %d)", worker_fd);
+		}
+		return 0;
+	}
+	pthread_mutex_unlock(&ipc_svc->manager_queue_from_epoll_mutex);
+
+	// create new worker
+	pthread_mutex_lock(&ipc_svc->manager_queue_from_worker_mutex);
+	if (ipc_svc->manager_queue_from_worker) {
+
+		cursor = g_list_first(ipc_svc->manager_queue_from_worker);
+		while (cursor) {
+			worker_fd = (int)cursor->data;
+			ipc_svc->manager_queue_from_worker = g_list_delete_link(ipc_svc->manager_queue_from_worker, cursor);
+
+			if (worker_fd) {
+				DEBUG("add idle worker_fd : %d", worker_fd);
+				ipc_svc->workers = g_list_append(ipc_svc->workers, (void*)worker_fd);
+			}
+			cursor = g_list_first(ipc_svc->manager_queue_from_worker);
+		}
+		pthread_mutex_unlock(&ipc_svc->manager_queue_from_worker_mutex);
+		return 0;
+	}
+	pthread_mutex_unlock(&ipc_svc->manager_queue_from_worker_mutex);
+
+	return 0;
 }
 
-static int __process_router_event(void *context, void *router, void *worker, gboolean for_queue)
+// if delete = true, steal client_id, then free(client_id)
+// if delete = false, return client_id pointer, then do no call free(client_id
+static int __find_client_id(pims_ipc_svc_s *ipc_svc, int client_fd, bool delete, char **client_id)
 {
-    char *pid = NULL;
-    char *call_id = NULL;
-    int64_t more = 0;
-    size_t more_size = sizeof(more);
-    int worker_id = -1;
-    gboolean is_with_data = FALSE;
-    gboolean is_valid = FALSE;
-
-#ifdef _TEST
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    printf("router time[%lu:%lu]\n", tv.tv_sec, tv.tv_usec);
-#endif
-
-    // init messages for receiving
-    zmq_msg_t pid_msg;
-    zmq_msg_t sequence_no_msg;
-    zmq_msg_t call_id_msg;
-    zmq_msg_t data_msg;
-    
-    zmq_msg_init(&pid_msg);
-    zmq_msg_init(&sequence_no_msg);
-    zmq_msg_init(&call_id_msg);
-    zmq_msg_init(&data_msg);
-
-    // relay a request from a client to a worker
-    do {
-        if (for_queue)
-        {
-            // dequeue a request
-            __dequeue_zmq_msg(&pid_msg);
-            __dequeue_zmq_msg(&sequence_no_msg);
-            __dequeue_zmq_msg(&call_id_msg);
-            is_with_data = __dequeue_zmq_msg(&data_msg);
-
-            if (is_with_data)
-                __dequeue_zmq_msg(NULL);
-        }
-        else
-        {
-            // read pid
-            if (_pims_zmq_msg_recv(&pid_msg, router, 0) == -1)
-            {
-                ERROR("recv error : %s", zmq_strerror(errno));
-                break;
-            }
-
-            // read empty and kill
-            zmq_msg_t empty_msg;
-            zmq_msg_init(&empty_msg);
-            if (_pims_zmq_msg_recv(&empty_msg, router, 0) == -1)
-            {
-                ERROR("recv error : %s", zmq_strerror(errno));
-                zmq_msg_close(&empty_msg);
-                break;
-            }
-            zmq_msg_close(&empty_msg);
-
-            // read sequence no
-            more = 0;
-            zmq_getsockopt(router, ZMQ_RCVMORE, &more, &more_size);
-            if (!more)
-            {
-                ERROR("recv error : corrupted message");
-                break;
-            }
-            if (_pims_zmq_msg_recv(&sequence_no_msg, router, 0) == -1)
-            {
-                ERROR("recv error : %s", zmq_strerror(errno));
-                break;
-            }
-
-            // read call id
-            more = 0;
-            zmq_getsockopt(router, ZMQ_RCVMORE, &more, &more_size);
-            if (!more)
-            {
-                ERROR("recv error : corrupted message");
-                break;
-            }
-            if (_pims_zmq_msg_recv(&call_id_msg, router, 0) == -1)
-            {
-                ERROR("recv error : %s", zmq_strerror(errno));
-                break;
-            }
-
-            // read data
-            more = 0;
-            zmq_getsockopt(router, ZMQ_RCVMORE, &more, &more_size);
-            if (more)
-            {
-                is_with_data = TRUE;
-                if (_pims_zmq_msg_recv(&data_msg, router, 0) == -1)
-                {
-                    ERROR("recv error : %s", zmq_strerror(errno));
-                    break;
-                }
-            }
-        }
-
-        pid = zmq_msg_data(&pid_msg);
-        ASSERT(pid != NULL);
-        VERBOSE("client pid = %s", pid);
-
-        call_id = (char*)zmq_msg_data(&call_id_msg);
-        ASSERT(call_id != NULL);
-        VERBOSE("call_id = [%s], create_call_id = [%s]", PIMS_IPC_CALL_ID_CREATE, call_id);
-        if (strcmp(PIMS_IPC_CALL_ID_CREATE, call_id) == 0)
-        {
-            // Get a worker. If cannot get a worker, create a worker and enqueue a current request 
-            __launch_worker(__worker_loop, context);
-            if (__get_worker((const char*)pid, &worker_id) != 0)
-            {
-                // enqueue a request until a new worker will be registered
-                __enqueue_zmq_msg(&pid_msg);
-                __enqueue_zmq_msg(&sequence_no_msg);
-                __enqueue_zmq_msg(&call_id_msg);
-                if (is_with_data)
-                    __enqueue_zmq_msg(&data_msg);
-                __enqueue_zmq_msg(NULL);
-
-                is_valid = TRUE;
-                break;
-            }
-        }
-        else
-        {
-            // Find a worker
-            if (__find_worker((const char*)pid, &worker_id) != 0)
-            {
-                ERROR("unable to find a worker");
-                break;
-            }
-
-            if (strcmp(PIMS_IPC_CALL_ID_DESTROY, call_id) == 0)
-            {
-                __remove_worker((const char*)pid);
-            }
-        }
-
-        VERBOSE("routing worker id = %x", worker_id);
-        // send worker id
-        zmq_msg_t worker_id_msg;
-        zmq_msg_init_size(&worker_id_msg, PIMS_IPC_STRING_WORKER_ID_SIZE);
-        char string_worker_id[PIMS_IPC_STRING_WORKER_ID_SIZE + 1] = "";
-        memcpy(zmq_msg_data(&worker_id_msg), __get_string_worker_id(worker_id, string_worker_id),
-                PIMS_IPC_STRING_WORKER_ID_SIZE);
-        if (_pims_zmq_msg_send(&worker_id_msg, worker, ZMQ_SNDMORE) == -1)
-        {
-            ERROR("send error : %s", zmq_strerror(errno));
-            zmq_msg_close(&worker_id_msg);
-            break;
-        }
-        zmq_msg_close(&worker_id_msg);
-
-        // send pid
-        if (_pims_zmq_msg_send(&pid_msg, worker, ZMQ_SNDMORE) == -1)
-        {
-            ERROR("send error : %s", zmq_strerror(errno));
-            break;
-        }
-
-        // send sequence no
-        if (_pims_zmq_msg_send(&sequence_no_msg, worker, ZMQ_SNDMORE) == -1)
-        {
-            ERROR("send error : %s", zmq_strerror(errno));
-            break;
-        }
-
-        // send call id
-        if (_pims_zmq_msg_send(&call_id_msg, worker, is_with_data?ZMQ_SNDMORE:0) == -1)
-        {
-            ERROR("send error : %s", zmq_strerror(errno));
-            break;
-        }
-
-        // send data
-        if (is_with_data)
-        {
-            if (_pims_zmq_msg_send(&data_msg, worker, 0) == -1)
-            {
-                ERROR("send error : %s", zmq_strerror(errno));
-                break;
-            }
-        }
-
-        is_valid = TRUE;
-    } while (0);
-
-    zmq_msg_close(&pid_msg);
-    zmq_msg_close(&sequence_no_msg);
-    zmq_msg_close(&call_id_msg);
-    zmq_msg_close(&data_msg);
-
-#ifdef _TEST
-    gettimeofday(&tv, NULL);
-    printf("router time[%lu:%lu]\n", tv.tv_sec, tv.tv_usec);
-#endif
-
-    if (is_valid == FALSE)
-        return -1;
-    
-    return 0;
+	pims_ipc_client_map_s *client;
+	GList *cursor = NULL;
+	cursor = g_list_first(ipc_svc->client_id_fd_map);
+	while(cursor) {
+		client = cursor->data;
+		if (client->fd == client_fd) {
+			*client_id = client->id;
+			if (delete) {
+				client->id = NULL;
+				ipc_svc->client_id_fd_map = g_list_delete_link(ipc_svc->client_id_fd_map, cursor);			//free(client);
+				free(client);
+			}
+			return 0;
+		}
+		cursor = g_list_next(cursor);
+	}
+	return -1;
 }
 
-static int __process_worker_event(void *context, void *worker, void *router)
+static void __request_push(pims_ipc_svc_s *ipc_svc, char *client_id, int client_fd, pims_ipc_raw_data_s *data)
 {
-    zmq_msg_t message;
-    int64_t more = 0;
-    size_t more_size = sizeof(more);
+	int ret;
+	int *org_fd;
+	pims_ipc_request_s *data_queue = NULL;
 
-    // Remove worker_id
-    zmq_msg_init(&message);
-    if (_pims_zmq_msg_recv(&message, worker, 0) == -1)
-    {
-        ERROR("recv error : %s", zmq_strerror(errno));
-    }
-    zmq_msg_close(&message);
+	pthread_mutex_lock(&ipc_svc->request_data_queue_mutex);
+	ret = g_hash_table_lookup_extended(ipc_svc->request_data_queue, (void*)client_id, (gpointer*)&org_fd,(gpointer*)&data_queue);
+	if (ret == TRUE && data_queue) {
+	}
+	else {
+		data_queue = calloc(1, sizeof(pims_ipc_request_s));
+		data_queue->request_count = 0;
+		pthread_mutex_init(&data_queue->raw_data_mutex, 0);
 
-    while (1)
-    {
-        //  Process all parts of the message
-        zmq_msg_init(&message);
-        if (_pims_zmq_msg_recv(&message, worker, 0) == -1)
-        {
-            ERROR("recv error : %s", zmq_strerror(errno));
-        }
-        more = 0;
-        zmq_getsockopt(worker, ZMQ_RCVMORE, &more, &more_size);
-        VERBOSE("router received a message : more[%u]", (unsigned int)more);
-        if (_pims_zmq_msg_send(&message, router, more?ZMQ_SNDMORE:0) == -1)
-        {
-            ERROR("send error : %s", zmq_strerror(errno));
-        }
-        zmq_msg_close(&message);
-        if (!more)
-            break;      //  Last message part
-    }
+		g_hash_table_insert(ipc_svc->request_data_queue, g_strdup(client_id), data_queue);
+	}
+	ipc_svc->request_queue = g_list_append(ipc_svc->request_queue, g_strdup(client_id));
+	pthread_mutex_unlock(&ipc_svc->request_data_queue_mutex);
 
-    return 0;
+	pthread_mutex_lock(&data_queue->raw_data_mutex);
+	data_queue->raw_data = g_list_append(data_queue->raw_data, data);
+	data_queue->client_fd = client_fd;
+	data_queue->request_count++;
+	pthread_mutex_unlock(&data_queue->raw_data_mutex);
 }
 
-static int __process_manager_event(void *context, void *manager)
+static void __delete_request_queue(pims_ipc_svc_s *ipc_svc, char *client_id)
 {
-    zmq_msg_t worker_id_msg;
-    int worker_id = -1;
-    
-    zmq_msg_init(&worker_id_msg);
-    if (_pims_zmq_msg_recv(&worker_id_msg, manager, 0) == -1)
-    {
-        ERROR("recv error : %s", zmq_strerror(errno));
-        zmq_msg_close(&worker_id_msg);
-        return -1;
-    }
-    zmq_msg_close(&worker_id_msg);
+	pims_ipc_request_s *data_queue = NULL;
+	int ret;
+	int *org_fd;
+	GList *l;
+	GList *cursor;
 
-    zmq_msg_init(&worker_id_msg);
-    if (_pims_zmq_msg_recv(&worker_id_msg, manager, 0) == -1)
-    {
-        ERROR("recv error : %s", zmq_strerror(errno));
-        zmq_msg_close(&worker_id_msg);
-        return -1;
-    }
-    memcpy(&worker_id, zmq_msg_data(&worker_id_msg), sizeof(int));
-    zmq_msg_close(&worker_id_msg);
+	pthread_mutex_lock(&ipc_svc->request_data_queue_mutex);
+	ret = g_hash_table_lookup_extended(ipc_svc->request_data_queue, (void*)client_id, (gpointer*)&org_fd,(gpointer*)&data_queue);
+	if (ret == TRUE)
+		g_hash_table_remove(ipc_svc->request_data_queue, (void*)client_id);
 
-    VERBOSE("registered worker id = %x", worker_id);
-    _g_singleton->workers = g_list_append(_g_singleton->workers, GINT_TO_POINTER(worker_id));
+	cursor = g_list_first(ipc_svc->request_queue);
+	while (cursor) {
+		l = cursor;
+		char *id = l->data;
+		cursor = g_list_next(cursor);
+		if (id && strcmp(id, client_id) == 0) {
+			free(id);
+			ipc_svc->request_queue = g_list_delete_link(ipc_svc->request_queue, l);
+		}
+	}
+	pthread_mutex_unlock(&ipc_svc->request_data_queue_mutex);
 
-    return 0;
+	if (data_queue) {
+		pthread_mutex_lock(&data_queue->raw_data_mutex);
+		cursor = g_list_first(data_queue->raw_data);
+		pims_ipc_raw_data_s *data;
+		while(cursor) {
+			l = cursor;
+			data = (pims_ipc_raw_data_s *)cursor->data;
+			cursor = g_list_next(cursor);
+			data_queue->raw_data = g_list_delete_link(data_queue->raw_data, l);
+			__free_raw_data(data);
+		}
+		g_list_free(data_queue->raw_data);
+		pthread_mutex_unlock(&data_queue->raw_data_mutex);
+		pthread_mutex_destroy(&data_queue->raw_data_mutex);
+		free(data_queue);
+	}
 }
 
-static int __process_monitor_event(void *context, void *monitor, void *manager)
+static int __send_identify(int fd, unsigned int seq_no, char *id, int id_len)
 {
-    int worker_id = -1;
-    char *pid = NULL;
-    zmq_msg_t pid_msg;
+	int len = sizeof(unsigned int)					// total size
+		+ id_len + sizeof(unsigned int)		// id
+		+ sizeof(unsigned int);				// seq_no
 
-    VERBOSE("");
-    
-    // read pid
-    zmq_msg_init(&pid_msg);
-    if (_pims_zmq_msg_recv(&pid_msg, monitor, 0) == -1)
-    {
-        ERROR("recv error : %s", zmq_strerror(errno));
-        zmq_msg_close(&pid_msg);
-        return -1;
-    }
+	char buf[len+1];
 
-    pid = (char*)zmq_msg_data(&pid_msg);
-    ASSERT(pid);
-    VERBOSE("client pid = %s", pid);
+	int length = 0;
+	memset(buf, 0x0, len+1);
 
-    if (__find_worker(pid, &worker_id) != 0)
-        return 0;
+	// total len
+	memcpy(buf, (void*)&len, sizeof(unsigned int));
+	length += sizeof(unsigned int);
 
-    VERBOSE("found worker id for %s = %x", pid, worker_id);
-    
-    __terminate_worker(manager, worker_id, pid);
-    __remove_worker(pid);
+	// id
+	memcpy(buf+length, (void*)&(id_len), sizeof(unsigned int));
+	length += sizeof(unsigned int);
+	memcpy(buf+length, (void*)(id), id_len);
+	length += id_len;
 
-    zmq_msg_close(&pid_msg);
+	// seq_no
+	memcpy(buf+length, (void*)&(seq_no), sizeof(unsigned int));
+	length += sizeof(unsigned int);
 
-    return 0;
+	return socket_send(fd, buf, length);
 }
 
-static void __client_closed_cb(const char *pid, void *data)
+static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 {
-	pims_ipc_svc_t *ipc_svc = (pims_ipc_svc_t*)data;
-    
-    VERBOSE("client pid = %s", pid);
+	int len = 0;
+	pims_ipc_raw_data_s *temp;
 
-    zmq_msg_t pid_msg;
-    zmq_msg_init_size(&pid_msg, strlen(pid) + 1);
-    memcpy(zmq_msg_data(&pid_msg), pid, strlen(pid) + 1);
-    if (_pims_zmq_msg_send(&pid_msg, ipc_svc->monitor, 0) == -1)
-        ERROR("send error : %s", zmq_strerror(errno));
-    zmq_msg_close(&pid_msg);
+	/* read the size of message. note that ioctl is non-blocking */
+	if (ioctl(fd, FIONREAD, &len)) {
+		ERROR("ioctl failed: %d", errno);
+		return -1;
+	}
+
+	/* when server or client closed socket */
+	if (len == 0) {
+		INFO("[IPC Socket] connection is closed");
+		return 0;
+	}
+
+	temp = (pims_ipc_raw_data_s*)calloc(1, sizeof(pims_ipc_raw_data_s));
+	temp->client_id = NULL;
+	temp->client_id_len = 0;
+	temp->call_id = NULL;
+	temp->call_id_len = 0;
+	temp->seq_no = 0;
+	temp->is_data = FALSE;
+	temp->data = NULL;
+	temp->data_len = 0;
+
+	int ret = 0;
+	unsigned int read_len = 0;
+	unsigned int total_len = 0;
+	unsigned int is_data = FALSE;
+
+	do {
+		// total length
+		ret = read(fd, (void *)&total_len, sizeof(unsigned int));
+		if (ret < 0) {	 ERROR("read error"); break;		}
+		read_len += ret;
+
+		// client_id
+		ret  = read(fd, (void *)&(temp->client_id_len), sizeof(unsigned int));
+		if (ret < 0) {	 ERROR("read error"); break;		}
+		read_len += ret;
+
+		temp->client_id = calloc(1, temp->client_id_len+1);
+		ret = socket_recv(fd, (void *)&(temp->client_id), temp->client_id_len);
+		if (ret < 0) {	 ERROR("socket_recv error"); break;		}
+		read_len += ret;
+
+		// sequnce no
+		ret = read(fd, (void *)&(temp->seq_no), sizeof(unsigned int));
+		if (ret < 0) {	 ERROR("read error"); break;		}
+		read_len += ret;
+
+		if (total_len == read_len) {
+			*data = temp;
+			*identity = true;
+			return read_len;
+		}
+
+		// call_id
+		ret  = read(fd, (void *)&(temp->call_id_len), sizeof(unsigned int));
+		if (ret < 0)	{ ERROR("read error"); break;		}
+		read_len += ret;
+
+		temp->call_id = calloc(1, temp->call_id_len+1);
+		ret = socket_recv(fd, (void *)&(temp->call_id), temp->call_id_len);
+		if (ret < 0) {	 ERROR("socket_recv error"); break;		}
+		read_len += ret;
+
+		// is_data
+		ret = read(fd, (void *)&(is_data), sizeof(unsigned int));
+		if (ret < 0) {	 ERROR("read error"); break;		}
+		read_len += ret;
+
+		// data
+		if (is_data) {
+			temp->is_data = TRUE;
+			ret = read(fd, (void *)&(temp->data_len), sizeof(unsigned int));
+			if (ret < 0) {	ERROR("read error"); break;		}
+			read_len += ret;
+
+			temp->data = calloc(1, temp->data_len+1);
+			ret = socket_recv(fd, (void *)&(temp->data), temp->data_len);
+			if (ret < 0) {	ERROR("socket_recv error"); break;		}
+			read_len += ret;
+		}
+
+		INFO("client_id : %s, call_id : %s, seq_no : %d", temp->client_id, temp->call_id, temp->seq_no);
+
+		*data = temp;
+		*identity = false;
+	}while(0);
+
+	if (ret < 0) {
+		__free_raw_data(temp);
+		*data = NULL;
+		*identity = false;
+	}
+
+	return read_len;
 }
 
-static int __open_zmq_socket(void *context, pims_ipc_svc_t *ipc_svc)
+static gboolean __request_handler(GIOChannel *src, GIOCondition condition, gpointer data)
 {
-    char *path = NULL;
-    int ret = -1;
-    int i = 0;
+	int ret;
+	int event_fd = g_io_channel_unix_get_fd(src);
+	char *client_id = NULL;
+	pims_ipc_svc_s *ipc_svc = (pims_ipc_svc_s*)data;
 
-    void *router = zmq_socket(context, ZMQ_ROUTER);
-    if (!router)
-    {
-        ERROR("socket error : %s", zmq_strerror(errno));
-        return -1;
-    }
-    path = g_strdup_printf("ipc://%s", ipc_svc->service);
-    if (zmq_bind(router, path) != 0)
-    {
-        ERROR("bind error : %s", zmq_strerror(errno));
-        zmq_close(router);
-        return -1;
-    }
-    g_free(path);
+	if (G_IO_HUP & condition) {
+		INFO("client closed ------------------------client_fd : %d", event_fd);
 
-    ret = chown(ipc_svc->service, getuid(), ipc_svc->group);
-    ret = chmod(ipc_svc->service, ipc_svc->mode);
+		close(event_fd);
 
-    void *worker = zmq_socket(context, ZMQ_ROUTER);
-    if (!worker)
-    {
-        ERROR("socket error : %s", zmq_strerror(errno));
-        zmq_close(router);
-        return -1;
-    }
-    path = g_strdup_printf("inproc://%s-%s", ipc_svc->service, PIMS_IPC_DEALER_PATH);
-    if (zmq_bind(worker, path) != 0)
-    {
-        ERROR("bind error : %s", zmq_strerror(errno));
-        zmq_close(router);
-        zmq_close(worker);
-        return -1;
-    }
-    g_free(path);
+		// Find client_id
+		__find_client_id(ipc_svc, event_fd, true, &client_id);
 
-    void *manager = zmq_socket(context, ZMQ_ROUTER);
-    if (!manager)
-    {
-        ERROR("socket error : %s", zmq_strerror(errno));
-        zmq_close(router);
-        zmq_close(worker);
-        return -1;
-    }
-    path = g_strdup_printf("inproc://%s-%s", ipc_svc->service, PIMS_IPC_MANAGER_PATH);
-    if (zmq_bind(manager, path) != 0)
-    {
-        ERROR("bind error : %s", zmq_strerror(errno));
-        zmq_close(router);
-        zmq_close(worker);
-        zmq_close(manager);
-        return -1;
-    }
-    g_free(path);
-    
-    void *monitor = zmq_socket(context, ZMQ_PAIR);
-    if (!monitor)
-    {
-        ERROR("socket error : %s", zmq_strerror(errno));
-        zmq_close(router);
-        zmq_close(worker);
-        zmq_close(manager);
-        return -1;
-    }
-    path = g_strdup_printf("inproc://%s-%s", ipc_svc->service, PIMS_IPC_MONITOR2_PATH);
-    if (zmq_bind(monitor, path) != 0)
-    {
-        ERROR("bind error : %s", zmq_strerror(errno));
-        zmq_close(router);
-        zmq_close(worker);
-        zmq_close(manager);
-        zmq_close(monitor);
-        return -1;
-    }
-    g_free(path);
+		// Send client_id to manager to terminate worker thread
+		if (client_id) {
+			pthread_mutex_lock(&ipc_svc->manager_queue_from_epoll_mutex);
+			ipc_svc->manager_queue_from_epoll = g_list_append(ipc_svc->manager_queue_from_epoll, (void*)g_strdup(client_id));
+			pthread_mutex_unlock(&ipc_svc->manager_queue_from_epoll_mutex);
+			write_command(ipc_svc->manager, 1);
 
-    ipc_svc->context = context;
-    ipc_svc->router = router;
-    ipc_svc->worker = worker;
-    ipc_svc->manager = manager;
-    ipc_svc->monitor = monitor;
+			__delete_request_queue(ipc_svc, client_id);
+			free(client_id);
+		}
 
-    path = g_strdup_printf("%s-%s", ipc_svc->service, PIMS_IPC_MONITOR_PATH);
-    ret = _server_socket_init(path, ipc_svc->group, ipc_svc->mode, __client_closed_cb, ipc_svc);
-    ASSERT(ret != -1);
-    g_free(path);
+		return FALSE;
+	}
 
-    // launch worker threads in advance
-    for (i = 0; i < ipc_svc->workers_max_count; i++)
-        __launch_worker(__worker_loop, context);
+	// receive data from client
+	int recv_len;
+	bool identity = false;
+	pims_ipc_raw_data_s *req = NULL;
 
-    return 0;
+	recv_len = __recv_raw_data(event_fd, &req, &identity);
+	if (recv_len > 0) {
+		// send command to router
+		if (identity) {
+			pims_ipc_client_map_s *client = (pims_ipc_client_map_s*)calloc(1, sizeof(pims_ipc_client_map_s));
+			client->fd = event_fd;
+			client->id = req->client_id;
+			req->client_id = NULL;
+			ipc_svc->client_id_fd_map = g_list_append(ipc_svc->client_id_fd_map, client);
+
+			// send server pid to client
+			char temp[100];
+			snprintf(temp, sizeof(temp), "%x", getpid());
+			ret = __send_identify(event_fd, req->seq_no, temp, strlen(temp));
+
+			__free_raw_data(req);
+			if (ret < 0)
+				return FALSE;
+			return TRUE;
+		}
+
+		__find_client_id(ipc_svc, event_fd, false, &client_id);
+
+		if (client_id) {
+			__request_push(ipc_svc, client_id, event_fd, req);
+			write_command(ipc_svc->router, 1);
+		}
+		else
+			ERROR("__find_client_id fail : event_fd (%d)", event_fd);
+	}
+	else {
+		ERROR("receive invalid : %d", event_fd);
+		close(event_fd);
+		return FALSE;
+	}
+
+	return TRUE;
 }
 
-static void __close_zmq_socket(pims_ipc_svc_t *ipc_svc)
+static gboolean __socket_handler(GIOChannel *src, GIOCondition condition, gpointer data)
 {
-    zmq_close(ipc_svc->router);
-    zmq_close(ipc_svc->worker);
-    zmq_close(ipc_svc->manager);
-    zmq_close(ipc_svc->monitor);
+	GIOChannel *channel;
+	pims_ipc_svc_s *ipc_svc = (pims_ipc_svc_s*)data;
+	int client_sockfd = -1;
+	int sockfd = ipc_svc->sockfd;
+	struct sockaddr_un clientaddr;
+	socklen_t client_len = sizeof(clientaddr);
+
+	client_sockfd = accept(sockfd, (struct sockaddr *)&clientaddr, &client_len);
+	if (-1 == client_sockfd) {
+		ERROR("accept error : %s", strerror(errno));
+		return TRUE;
+	}
+
+	channel = g_io_channel_unix_new(client_sockfd);
+	g_io_add_watch(channel, G_IO_IN|G_IO_HUP, __request_handler, data);
+	g_io_channel_unref(channel);
+
+	return TRUE;
 }
 
-static int __open_zmq_socket_for_publish(void *context, pims_ipc_svc_for_publish_t *ipc_svc)
+static void* __main_loop(void *user_data)
 {
-    char *path = NULL;
-    int ret = -1;
+	int ret;
+	struct sockaddr_un addr;
+	GIOChannel *gio = NULL;
+	pims_ipc_svc_s *ipc_svc = (pims_ipc_svc_s*)user_data;
 
-    ipc_svc->context = context;
-    void *publisher = NULL;
-    publisher = zmq_socket(context, ZMQ_PUB);
-    if (!publisher)
-    {
-        ERROR("socket error : %s", zmq_strerror(errno));
-        return -1;
-    }
+	if (sd_listen_fds(1) == 1 && sd_is_socket_unix(SD_LISTEN_FDS_START, SOCK_STREAM, -1, ipc_svc->service, 0) > 0) {
+		 ipc_svc->sockfd = SD_LISTEN_FDS_START;
+	}
+	else {
+		unlink(ipc_svc->service);
+		ipc_svc->sockfd = socket(PF_UNIX, SOCK_STREAM, 0);
 
-    path = g_strdup_printf("ipc://%s", ipc_svc->service);
-    if (zmq_bind(publisher, path) != 0)
-    {
-        ERROR("bind error : %s", zmq_strerror(errno));
-        zmq_close(publisher);
-        return -1;
-    }
-    g_free(path);
+		bzero(&addr, sizeof(addr));
+		addr.sun_family = AF_UNIX;
+		snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", ipc_svc->service);
 
-    ret = chown(ipc_svc->service, getuid(), ipc_svc->group);
-    ret = chmod(ipc_svc->service, ipc_svc->mode);
+		ret = bind(ipc_svc->sockfd, (struct sockaddr *)&addr, sizeof(addr));
+		if (ret != 0)
+			ERROR("bind error :%d", ret);
+		ret = listen(ipc_svc->sockfd, 30);
 
-    ipc_svc->context = context;
-    ipc_svc->publisher = publisher;
+		ret = chown(ipc_svc->service, getuid(), ipc_svc->group);
+		ret = chmod(ipc_svc->service, ipc_svc->mode);
+	}
 
-    return 0;
+	gio = g_io_channel_unix_new(ipc_svc->sockfd);
+
+	g_io_add_watch(gio, G_IO_IN, __socket_handler, (gpointer)ipc_svc);
+
+	return NULL;
 }
 
-static void __close_zmq_socket_for_publish(pims_ipc_svc_for_publish_t *ipc_svc)
+static int __open_router_fd(pims_ipc_svc_s *ipc_svc)
 {
-    zmq_close(ipc_svc->publisher);
+	int ret = -1;
+	int flags;
+	int router;
+	int manager;
+
+	// router inproc eventfd
+	router = eventfd(0,0);
+	if (-1 == router) {
+		ERROR("eventfd error : %d", errno);
+		return -1;
+	}
+	VERBOSE("router :%d\n", router);
+
+	flags = fcntl(router, F_GETFL, 0);
+	if (flags == -1)
+		flags = 0;
+	ret = fcntl (router, F_SETFL, flags | O_NONBLOCK);
+	VERBOSE("rounter fcntl : %d\n", ret);
+
+	// manager inproc eventfd
+	manager = eventfd(0,0);
+	if (-1 == manager) {
+		ERROR("eventfd error : %d", errno);
+		close(router);
+		return -1;
+	}
+	VERBOSE("manager :%d\n", manager);
+
+	flags = fcntl(manager, F_GETFL, 0);
+	if (flags == -1)
+		flags = 0;
+	ret = fcntl (manager, F_SETFL, flags | O_NONBLOCK);
+	VERBOSE("manager fcntl : %d\n", ret);
+
+	ipc_svc->router = router;
+	ipc_svc->manager = manager;
+
+	return 0;
 }
 
-static void* __main_loop(void *args)
+static void __close_router_fd(pims_ipc_svc_s *ipc_svc)
 {
-    char *path = NULL;
-    int ret = -1;
-	pims_ipc_svc_t *ipc_svc = (pims_ipc_svc_t*)args;
+	close(ipc_svc->router);
+	close(ipc_svc->manager);
+}
 
-    void *monitor_peer = zmq_socket(ipc_svc->context, ZMQ_PAIR);
-    ASSERT(monitor_peer);
-    
-    path = g_strdup_printf("inproc://%s-%s", ipc_svc->service, PIMS_IPC_MONITOR2_PATH);
-    ret = zmq_connect(monitor_peer, path);
-    ASSERT(ret == 0);
-    g_free(path);
+static void* __publish_loop(void *user_data)
+{
+	int ret;
+	int epfd;
 
-    // poll all sockets
-    while (1)
-    {
-        zmq_pollitem_t items[] = {
-            {ipc_svc->router, 0, ZMQ_POLLIN, 0},
-            {ipc_svc->worker, 0, ZMQ_POLLIN, 0},
-            {ipc_svc->manager, 0, ZMQ_POLLIN, 0},
-            {monitor_peer, 0, ZMQ_POLLIN, 0}
-        };
+	struct sockaddr_un addr;
+	struct epoll_event ev = {0};
+	pims_ipc_svc_for_publish_s *ipc_svc = (pims_ipc_svc_for_publish_s*)user_data;
 
-        if (zmq_poll(items, 4, -1) == -1)
-        {
-            if (errno == EINTR)
-                continue;
+	unlink(ipc_svc->service);
+	ipc_svc->publish_sockfd = socket(PF_UNIX, SOCK_STREAM, 0);
 
-            ERROR("poll error : %s", zmq_strerror(errno));
-            break;
-        }
+	bzero(&addr, sizeof(struct sockaddr_un));
+	addr.sun_family = AF_UNIX;
+	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", ipc_svc->service);
 
-        if (items[0].revents & ZMQ_POLLIN)
-        {
-            __process_router_event(ipc_svc->context, ipc_svc->router, ipc_svc->worker, FALSE);
-        }
+	int flags = fcntl (ipc_svc->publish_sockfd, F_GETFL, 0);
+	if (flags == -1)
+		flags = 0;
+	ret = fcntl (ipc_svc->publish_sockfd, F_SETFL, flags | O_NONBLOCK);
+	VERBOSE("publish socketfd fcntl : %d\n", ret);
 
-        if (items[1].revents & ZMQ_POLLIN)
-        {
-            __process_worker_event(ipc_svc->context, ipc_svc->worker, ipc_svc->router);
-        }
+	ret = bind(ipc_svc->publish_sockfd, (struct sockaddr *)&(addr), sizeof(struct sockaddr_un));
+	if (ret != 0)
+		ERROR("bind error :%d", ret);
+	ret = listen(ipc_svc->publish_sockfd, 30);
+	WARN_IF(ret != 0, "listen error :%d", ret);
 
-        if (items[2].revents & ZMQ_POLLIN)
-        {
-            __process_manager_event(ipc_svc->context, ipc_svc->manager);
-            if (ipc_svc->requests)
-                __process_router_event(ipc_svc->context, ipc_svc->router, ipc_svc->worker, TRUE);
-        }
+	ret = chown(ipc_svc->service, getuid(), ipc_svc->group);
+	WARN_IF(ret != 0, "listen error :%d", ret);
+	ret = chmod(ipc_svc->service, ipc_svc->mode);
+	WARN_IF(ret != 0, "listen error :%d", ret);
 
-        if (items[3].revents & ZMQ_POLLIN)
-        {
-            __process_monitor_event(ipc_svc->context, monitor_peer, ipc_svc->manager);
-        }
-    }
-    
-    zmq_close(monitor_peer);
+	epfd = epoll_create(MAX_EPOLL_EVENT);
 
-    return NULL;
+	ev.events = EPOLLIN | EPOLLHUP;
+	ev.data.fd = ipc_svc->publish_sockfd;
+
+	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, ipc_svc->publish_sockfd, &ev);
+	WARN_IF(ret != 0, "listen error :%d", ret);
+
+	while (!ipc_svc->epoll_stop_thread) {
+		int i = 0;
+		struct epoll_event events[MAX_EPOLL_EVENT] = {{0}, };
+		int event_num = epoll_wait(epfd, events, MAX_EPOLL_EVENT, -1);
+
+		if (ipc_svc->epoll_stop_thread)
+			break;
+
+		if (event_num == -1) {
+			if (errno != EINTR) {
+				ERROR("errno:%d\n", errno);
+				break;
+			}
+		}
+
+		for (i = 0; i < event_num; i++) {
+			int event_fd = events[i].data.fd;
+
+			if (events[i].events & EPOLLHUP) {
+				VERBOSE("client closed -----------------------------------------:%d", event_fd);
+				if (epoll_ctl(epfd, EPOLL_CTL_DEL, event_fd, events) == -1) {
+					ERROR("epoll_ctl (EPOLL_CTL_DEL) fail : errno(%d)", errno);
+				}
+				close(event_fd);
+
+				// Find client_id and delete
+				GList *cursor = NULL;
+
+				pthread_mutex_lock(&ipc_svc->subscribe_fds_mutex);
+				cursor = g_list_first(ipc_svc->subscribe_fds);
+				while (cursor) {
+					if (event_fd == (int)cursor->data) {
+						ipc_svc->subscribe_fds = g_list_delete_link(ipc_svc->subscribe_fds, cursor);
+						break;
+					}
+					cursor = g_list_next(cursor);
+				}
+				pthread_mutex_unlock(&ipc_svc->subscribe_fds_mutex);
+				continue;
+			}
+			else if (event_fd == ipc_svc->publish_sockfd) {		// connect client
+				struct sockaddr_un remote;
+				int remote_len = sizeof(remote);
+				int client_fd = accept(ipc_svc->publish_sockfd, (struct sockaddr *)&remote, (socklen_t*) &remote_len);
+				if (client_fd == -1) {
+					ERROR("accept fail : errno : %d", errno);
+					continue;
+				}
+				VERBOSE("client subscriber connect: %d", client_fd);
+
+				pthread_mutex_lock(&ipc_svc->subscribe_fds_mutex);
+				ipc_svc->subscribe_fds = g_list_append(ipc_svc->subscribe_fds, (void*)client_fd);
+				pthread_mutex_unlock(&ipc_svc->subscribe_fds_mutex);
+
+				ev.events = EPOLLIN;
+				ev.data.fd = client_fd;
+				if (epoll_ctl(epfd, EPOLL_CTL_ADD, client_fd, &ev) == -1) {
+					ERROR("epoll_ctl (EPOLL_CTL_ADD) fail : error(%d)\n", errno);
+					continue;
+				}
+			}
+		}
+	}
+
+	close(ipc_svc->publish_sockfd);
+	close(epfd);
+
+	return NULL;
+}
+
+static void __stop_for_publish(pims_ipc_svc_for_publish_s *ipc_svc)
+{
+	ipc_svc->epoll_stop_thread = true;
+}
+
+static void* __router_loop(void *data)
+{
+	pims_ipc_svc_s *ipc_svc = (pims_ipc_svc_s*)data;
+	int fd_count = 2;
+	struct pollfd *pollfds;
+
+	pollfds = (struct pollfd*) malloc (fd_count * sizeof (struct pollfd));
+
+	pollfds[0].fd = ipc_svc->router;
+	pollfds[0].events = POLLIN;
+	pollfds[1].fd = ipc_svc->manager;
+	pollfds[1].events = POLLIN;
+
+	while (1) {
+		int ret = -1;
+		uint64_t dummy;
+		int check_router_queue = -1;
+		int check_manager_queue = -1;
+
+		while (1) {
+			ret = poll(pollfds, fd_count, 1000);
+			if (ret == -1 && errno == EINTR) {
+				//free (pollfds);
+				continue;		//return NULL;
+			}
+			break;
+		}
+
+		if (ret > 0) {
+			if (pollfds[0].revents & POLLIN) {
+				// request router: send request to worker
+				if (sizeof (dummy) == read_command(pollfds[0].fd, &dummy)) {
+					check_router_queue = __process_router_event(ipc_svc, false);
+				}
+			}
+
+			if (pollfds[1].revents & POLLIN) {
+				// worker manager
+				if (sizeof (dummy) == read_command(pollfds[1].fd, &dummy)) {
+					check_manager_queue = __process_manager_event(ipc_svc);
+					if (ipc_svc->delay_count > 0)
+						check_router_queue = __process_router_event(ipc_svc, true);
+				}
+			}
+		}
+
+		// check queue
+		while(check_router_queue > 0 || check_manager_queue > 0) {
+			read_command(pollfds[0].fd, &dummy);
+			check_router_queue = __process_router_event(ipc_svc, false);
+
+			read_command(pollfds[1].fd, &dummy);
+			check_manager_queue = __process_manager_event(ipc_svc);
+			if (ipc_svc->delay_count > 0)
+				check_router_queue = __process_router_event(ipc_svc, true);
+		}
+	}
+
+	free(pollfds);
+
+	return NULL;
 }
 
 API void pims_ipc_svc_run_main_loop(GMainLoop* loop)
 {
-    int retval = -1;
-    GMainLoop* main_loop = loop;
+	int ret = -1;
+	GMainLoop* main_loop = loop;
 
-    if(main_loop == NULL) {
-        main_loop = g_main_loop_new(NULL, FALSE);
-    }
+	if (main_loop == NULL) {
+		main_loop = g_main_loop_new(NULL, FALSE);
+	}
 
-    void *context = zmq_init(1);
-    ASSERT (context != NULL);
+	if (_g_singleton_for_publish)
+		__launch_thread(__publish_loop, _g_singleton_for_publish);
 
-    if (_g_singleton_for_publish)
-    {
-        retval = __open_zmq_socket_for_publish(context, _g_singleton_for_publish);
-        ASSERT(retval == 0);
-    }
+	if (_g_singleton) {
+		ret = __open_router_fd(_g_singleton);
+		ASSERT(ret == 0);
 
-    if (_g_singleton)
-    {
-        retval = __open_zmq_socket(context, _g_singleton);
-        ASSERT(retval == 0);
-    }
+		int i;
+		// launch worker threads in advance
+		for (i = 0; i < _g_singleton->workers_max_count; i++)
+			__launch_thread(__worker_loop, _g_singleton);
 
-    __launch_worker(__main_loop, _g_singleton);
+		__launch_thread(__router_loop, _g_singleton);
+		__main_loop(_g_singleton);
+	}
 
-    g_main_loop_run(main_loop);
+	g_main_loop_run(main_loop);
 
-    if (_g_singleton)
-    {
-        __close_zmq_socket(_g_singleton);
-    }
+	if (_g_singleton)
+		__close_router_fd(_g_singleton);
 
-    if (_g_singleton_for_publish)
-    {
-        __close_zmq_socket_for_publish(_g_singleton_for_publish);
-    }
+	if (_g_singleton_for_publish)
+		__stop_for_publish(_g_singleton_for_publish);
 
-    if (zmq_term(context) == -1)
-        WARNING("term error : %s", zmq_strerror(errno));
 }
+
+API void pims_ipc_svc_set_client_disconnected_cb(pims_ipc_svc_client_disconnected_cb callback, void *user_data)
+{
+	if (_client_disconnected_cb.callback) {
+		ERROR("already registered");
+		return;
+	}
+	_client_disconnected_cb.callback = callback;
+	_client_disconnected_cb.user_data = user_data;
+}
+
+

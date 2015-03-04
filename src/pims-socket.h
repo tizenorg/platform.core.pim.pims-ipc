@@ -21,20 +21,23 @@
 #define __PIMS_SOCKET_H__
 
 #include <unistd.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C"
 {
 #endif
 
-typedef void (*server_socket_client_closed_cb)(const char *pid, void *user_data);
-int _server_socket_init(const char *path, gid_t group, mode_t mode,
-        server_socket_client_closed_cb callback, void *user_data);
-int _client_socket_init(const char *path, const char *pid);
+int socket_send(int fd, char *buf, int len);
+int socket_recv(int fd, void **buf, unsigned int len);
+int socket_send_data(int fd, char *buf, unsigned int len);
 
-#ifdef _cplusplus
+int write_command(int fd, const uint64_t cmd);
+int read_command(int fd, uint64_t *cmd);
+
+#ifdef __cplusplus
 }
 #endif
 

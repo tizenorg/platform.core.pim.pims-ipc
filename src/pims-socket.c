@@ -16,8 +16,6 @@
  * limitations under the License.
  */
 
-
-#ifndef _NON_SLP
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,262 +23,150 @@
 #include <errno.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <systemd/sd-daemon.h>
 
-#include <pims-internal.h>
-#include <pims-debug.h>
-#include <pims-socket.h>
+#include "pims-internal.h"
+#include "pims-debug.h"
+#include "pims-socket.h"
 
-typedef struct
+#define MAX_ARRAY_LEN	65535
+
+int socket_send(int fd, char *buf, int len)
 {
-    int sockfd;
-    server_socket_client_closed_cb callback;
-    void *user_data;
-    GHashTable *client_table;
-} server_socket_context_t;
+	if (!buf || len <= 0) {
+		INFO("No data to send %p, %d", buf, len);
+		return -1;
+	}
 
-static int __socket_writen(int fd, char *buf, int buf_size)
-{
-    int ret, writed = 0;
-    while (buf_size)
-    {
-        ret = write(fd, buf+writed, buf_size);
-        if (-1 == ret)
-        {
-            if (EINTR == errno)
-                continue;
-            else
-                return ret;
-        }
-        writed += ret;
-        buf_size -= ret;
-    }
-    return writed;
+	int length = len;
+	int passed_len = 0;
+	int write_len = 0;
+
+	while (length > 0) {
+		passed_len = send(fd, (const void *)buf, length, MSG_NOSIGNAL);
+		if (passed_len == -1) {
+			if (errno == EINTR)
+				continue;
+			else if (errno == EAGAIN)
+				continue;
+			else if (errno == EWOULDBLOCK)
+				continue;
+			ERROR("send error [%d]", errno);
+			break;
+		} else if (passed_len == 0)
+			break;
+		length -= passed_len;
+		buf += passed_len;
+	}
+	write_len = len - length;
+
+	if (write_len != len) {
+		WARNING("WARNING: buf_size [%d] != write_len[%d]", len, write_len);
+		return -1;
+	}
+	VERBOSE("write_len [%d]", write_len);
+
+	return write_len;
 }
 
-static int __socket_readn(int fd, char *buf, int buf_size)
+int socket_recv(int fd, void **buf, unsigned int len)
 {
-    int ret, read_size = 0;
+	if (!buf) {
+		INFO("Buffer must not null");
+		return -1;
+	}
 
-    while (buf_size)
-    {
-        ret = read(fd, buf+read_size, buf_size);
-        if (-1 == ret)
-        {
-            if (EINTR == errno)
-                continue;
-            else
-                return ret;
-        }
-        read_size += ret;
-        buf_size -= ret;
-    }
-    return read_size;
+	unsigned int length = len;
+	int read_len = 0;
+	int final_len = 0;
+	char *temp = *buf;
+
+	while (length > 0) {
+		read_len = read(fd, (void *)temp, length);
+		if (read_len < 0) {
+			if (errno == EINTR)
+				continue;
+			else if (errno == EAGAIN)
+				continue;
+			else if (errno == EWOULDBLOCK)
+				continue;
+			else if (errno == EPIPE) {
+				ERROR("connection closed : read err %d", errno, read_len, length);
+				free(*buf);
+				*buf = NULL;
+				return 0; /* connection closed */
+			}
+			ERROR("read err %d, read_len :%d, length : %d", errno, read_len, length);
+			final_len = read_len;
+			break;
+		} else if (read_len == 0)
+			break;
+
+		length -= read_len;
+		temp += read_len;
+	}
+
+	if (final_len == 0)
+		final_len = (len-length);
+
+	if (len != final_len) {
+		WARNING("WARNING: buf_size [%d] != read_len[%d]\n", read_len, final_len);
+		return -1;
+	}
+
+	((char*)*buf)[len]= '\0';
+
+	return final_len;
 }
 
-#define PIMS_IPC_PID_BUFFER_SIZE    20
-static gboolean __request_handler(GIOChannel *src, GIOCondition condition, gpointer data)
+int socket_send_data(int fd, char *buf, unsigned int len)
 {
-    server_socket_context_t *context = (server_socket_context_t*)data;
-    int ret = -1;
-    int fd = -1;
-    int orig_fd = -1;
-    char *pid = NULL;
-    char buffer[PIMS_IPC_PID_BUFFER_SIZE] = "";
+	int ret = 0;
+	int send_len = 0;
+	int remain_len = len;
 
-    fd = g_io_channel_unix_get_fd(src);
+	if (len > MAX_ARRAY_LEN)
+		INFO("send long data : length(%d) ++++++++++++++++++++++++", len);
 
-    if (G_IO_HUP & condition)
-    {
-        close(fd);
+	while (len > send_len) {
+		if (remain_len > MAX_ARRAY_LEN)
+			ret = socket_send(fd, (buf+send_len), MAX_ARRAY_LEN);
+		else
+			ret = socket_send(fd, (buf+send_len), remain_len);
 
-        if (g_hash_table_lookup_extended(context->client_table, GINT_TO_POINTER(fd),
-                    (gpointer*)&orig_fd, (gpointer*)&pid) == TRUE)
-        {
-            VERBOSE("found pid for %u = %s", fd, pid);
-            context->callback((const char*)pid, context->user_data);
-            g_hash_table_remove(context->client_table, (gconstpointer)fd);
-        }
-        else
-        {
-            VERBOSE("unable to find pid for %u", fd);
-        }
+		if (ret < 0) {
+			ERROR("socket_send error");
+			break;
+		}
+		send_len += ret;
+		remain_len -= ret;
+	}
 
-        return FALSE;
-    }
+	if (ret < 0) {
+		ERROR("socket_send error");
+		return -1;
+	}
 
-    memset(buffer, 0x00, PIMS_IPC_PID_BUFFER_SIZE);
-    ret = read(fd, (char *)buffer, PIMS_IPC_PID_BUFFER_SIZE-1);
-    if (ret <= 0)
-    {
-        ERROR("read error : %s", strerror(errno));
-        close(fd);
-
-        return FALSE;
-    }
-
-    VERBOSE("client fd = %u, pid = %s", fd, buffer);
-    g_hash_table_insert(context->client_table, GINT_TO_POINTER(fd), g_strdup(buffer));
-
-    pid_t mypid = getpid();
-    ret = __socket_writen(fd, (char*)&mypid, sizeof(pid_t));
-    if (ret != sizeof(pid_t))
-    {
-        ERROR("write error : %s", strerror(errno));
-        close(fd);
-        g_hash_table_remove(context->client_table, (gconstpointer)fd);
-
-        return FALSE;
-    }
-
-   return TRUE;
+	return send_len;
 }
 
-static gboolean __socket_handler(GIOChannel *src, GIOCondition condition, gpointer data)
+int write_command(int fd, const uint64_t cmd)
 {
-    GIOChannel *channel;
-    server_socket_context_t *context = (server_socket_context_t*)data;
-    int client_sockfd = -1;
-    int sockfd = context->sockfd;
-    struct sockaddr_un clientaddr;
-    socklen_t client_len = sizeof(clientaddr);
+	// poll : Level Trigger
+	uint64_t clear_cmd = 0;
+	int ret = write(fd, &clear_cmd, sizeof(clear_cmd));
+	if (ret < 0)
+		ERROR("write fail (%d)", ret);
 
-    client_sockfd = accept(sockfd, (struct sockaddr *)&clientaddr, &client_len);
-    if (-1 == client_sockfd)
-    {
-        ERROR("accept error : %s", strerror(errno));
-        return TRUE;
-    }
-
-    channel = g_io_channel_unix_new(client_sockfd);
-    g_io_add_watch(channel, G_IO_IN|G_IO_HUP, __request_handler, data);
-    g_io_channel_unref(channel);
-
-    return TRUE;
+	return write(fd, &cmd, sizeof(cmd));
 }
 
-int _server_socket_init(const char *path, gid_t group, mode_t mode,
-        server_socket_client_closed_cb callback, void *user_data)
+int read_command(int fd, uint64_t *cmd)
 {
-    int sockfd = -1;
-    GIOChannel *gio = NULL;
-
-    if (sd_listen_fds(1) == 1 && sd_is_socket_unix(SD_LISTEN_FDS_START, SOCK_STREAM, -1, path, 0) > 0)
-    {
-        DEBUG("using system daemon");
-
-        sockfd = SD_LISTEN_FDS_START;
-    }
-    else
-    {
-        struct sockaddr_un addr;
-        int ret = -1;
-        
-        DEBUG("using local socket");
-
-        unlink(path);
-
-        bzero(&addr, sizeof(addr));
-        addr.sun_family = AF_UNIX;
-        snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
-
-        sockfd = socket(PF_UNIX, SOCK_STREAM, 0);
-        if (-1 == sockfd)
-        {
-            ERROR("socket error : %s", strerror(errno));
-            return -1;
-        }
-
-        ret = bind(sockfd, (struct sockaddr *)&addr, sizeof(addr));
-        if (-1 == ret)
-        {
-            ERROR("bind error : %s", strerror(errno));
-            close(sockfd);
-            return -1;
-        }
-
-        ret = chown(path, getuid(), group);
-        ret = chmod(path, mode);
-
-        ret = listen(sockfd, 30);
-        if (-1 == ret)
-        {
-            ERROR("listen error : %s", strerror(errno));
-            close(sockfd);
-            return -1;
-        }
-    }
-
-    gio = g_io_channel_unix_new(sockfd);
-
-    server_socket_context_t *context = g_new0(server_socket_context_t, 1);
-    context->sockfd = sockfd;
-    context->callback = callback;
-    context->user_data = user_data;
-    context->client_table = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
-    ASSERT(context->client_table);
-
-    g_io_add_watch(gio, G_IO_IN, __socket_handler, (gpointer)context);
-
-    return sockfd;
+	uint64_t dummy;
+	int len = read(fd, &dummy, sizeof(dummy));
+	if (len == sizeof(dummy)) {
+		*cmd = dummy;
+	}
+	return len;
 }
 
-int _client_socket_init(const char *path, const char *pid)
-{
-    int sockfd = -1;
-    int ret = -1;
-    struct sockaddr_un caddr = {0};
-    pid_t server_pid = 0;
-
-    ASSERT(path != NULL);
-    ASSERT(pid != NULL);
-    bzero(&caddr, sizeof(caddr));
-    caddr.sun_family = AF_UNIX;
-    snprintf(caddr.sun_path, sizeof(caddr.sun_path), "%s", path);
-
-    sockfd = socket(PF_UNIX, SOCK_STREAM, 0);
-    if (-1 == sockfd)
-    {
-        ERROR("socket error : %s", strerror(errno));
-        return -1;
-    }
-
-    ret = connect(sockfd, (struct sockaddr *)&caddr, sizeof(caddr));
-    if (-1 == ret) {
-        ERROR("connect error : %s", strerror(errno));
-        close(sockfd);
-        return -1;
-    }
-    ret = __socket_writen(sockfd, (char*)pid, strlen(pid) + 1);
-    if (ret <= 0)
-    {
-        ERROR("write error : %s", strerror(errno));
-        close(sockfd);
-        return -1;
-    }
-    ret = __socket_readn(sockfd, (char*)&server_pid, sizeof(pid_t));
-    if (ret != sizeof(pid_t))
-    {
-        ERROR("read error : %s", strerror(errno));
-        close(sockfd);
-        return -1;
-    }
-
-    return sockfd;
-}
-
-#else
-#include <pims-socket.h>
-
-int _server_socket_init(const char *path, gid_t group, mode_t mode,
-        server_socket_client_closed_cb callback, void *user_data)
-{
-    return 0;
-}
-
-int _client_socket_init(const char *path, const char *pid)
-{
-    return 0;
-}
-
-#endif

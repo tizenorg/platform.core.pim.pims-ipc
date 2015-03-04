@@ -17,8 +17,8 @@
  */
 
 
-#ifndef __PIMS_IPC_DATA_H__
-#define __PIMS_IPC_DATA_H__
+#ifndef __PIMS_IPC_DATA_INTERNAL_H__
+#define __PIMS_IPC_DATA_INTERNAL_H__
 
 #include <pims-ipc-types.h>
 
@@ -27,16 +27,11 @@ extern "C"
 {
 #endif
 
-#define pims_ipc_data_create(flags) pims_ipc_data_create_with_size(1024, (flags))
-
-pims_ipc_data_h pims_ipc_data_create_with_size(unsigned int size, int flags);
-void pims_ipc_data_destroy(pims_ipc_data_h ipc);
-void* pims_ipc_data_get(pims_ipc_data_h data, unsigned int *size);
-int pims_ipc_data_put(pims_ipc_data_h data, void *buf, unsigned int size);
+pims_ipc_data_h pims_ipc_data_steal_unmarshal(void *buf, unsigned int size);
 
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* __PIMS_IPC_DATA_H__ */
+#endif /* __PIMS_IPC_DATA_INTERNAL_H__ */

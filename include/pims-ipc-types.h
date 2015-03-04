@@ -20,12 +20,11 @@
 #ifndef __PIMS_IPC_TYPES_H__
 #define __PIMS_IPC_TYPES_H__
 
-#include <zmq.h>
 #include <glib.h>
 #include <stdbool.h>
 
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C"
 {
 #endif
@@ -50,12 +49,15 @@ typedef enum {
     PIMS_IPC_DATA_TYPE_MEMORY,
 } pims_ipc_data_type_e;
 
-typedef void (*pims_ipc_svc_call_cb)(pims_ipc_h ipc, pims_ipc_data_h data_in, 
+typedef void (*pims_ipc_svc_call_cb)(pims_ipc_h ipc, pims_ipc_data_h data_in,
                                     pims_ipc_data_h *data_out, void *userdata);
+typedef void (*pims_ipc_svc_client_disconnected_cb)(pims_ipc_h ipc, void *userdata);
+
 typedef void (*pims_ipc_call_async_cb)(pims_ipc_h ipc, pims_ipc_data_h data_out, void *userdata);
 typedef void (*pims_ipc_subscribe_cb)(pims_ipc_h ipc, pims_ipc_data_h data, void *userdata);
 
-#ifdef _cplusplus
+
+#ifdef __cplusplus
 }
 #endif
 

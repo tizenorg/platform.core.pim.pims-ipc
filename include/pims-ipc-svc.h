@@ -23,7 +23,7 @@
 #include <pims-ipc-types.h>
 #include <sys/stat.h>
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C"
 {
 #endif
@@ -38,7 +38,9 @@ int pims_ipc_svc_publish(char *module, char *event, pims_ipc_data_h data);
 
 void pims_ipc_svc_run_main_loop(GMainLoop* main_loop);
 
-#ifdef _cplusplus
+void pims_ipc_svc_set_client_disconnected_cb(pims_ipc_svc_client_disconnected_cb callback, void *userdata);
+
+#ifdef __cplusplus
 }
 #endif
 

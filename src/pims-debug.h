@@ -20,48 +20,25 @@
 #ifndef __PIMS_DEBUG_H__
 #define __PIMS_DEBUG_H__
 
-#ifndef _NON_SLP
-#include <dlog.h>
-#endif
 #include <assert.h>
 
-#ifdef _cplusplus
+#define LOG_TAG     "PIMS_IPC"
+#include <dlog.h>
+
+#ifdef __cplusplus
 extern "C"
 {
 #endif
 
-/* Tag defines */
-#define TAG_IPC     "PIMS_IPC"
+#define PIMS_VERBOSE_TAG(frmt, args...) SLOGV(frmt, ##args);
+#define PIMS_DEBUG_TAG(frmt, args...)   SLOGD(frmt, ##args);
+#define PIMS_INFO_TAG(frmt, args...)    SLOGI(frmt, ##args);
+#define PIMS_WARN_TAG(frmt, args...)    SLOGV(frmt, ##args);
+#define PIMS_ERROR_TAG(frmt, args...)   SLOGE(frmt, ##args);
 
-/* debug base macro */
-#ifndef _NON_SLP
-#define __ug_log(logtype, tag, frmt, args...) \
-        do {LOG(logtype, tag, "%s:%s(%d) > "frmt"\n", __MODULE__, __FUNCTION__, __LINE__, ##args);} while (0)
-#else
-#define LOG_VERBOSE "VERBOSE"
-#define LOG_DEBUG   "DEBUG"
-#define LOG_INFO    "INFO"
-#define LOG_WARN    "WARN"
-#define LOG_ERROR   "ERROR"
-#define __ug_log(logtype, tag, frmt, args...) \
-        do {printf("[%s][%s][%08x] %s:%s(%d) > "frmt"\n", logtype, tag, (unsigned int)pthread_self(), __FILE__, __FUNCTION__, __LINE__, ##args);} while (0)
-#endif
 
-#define pims_verbose(tag, frmt, args...) __ug_log(LOG_VERBOSE, tag, frmt, ##args)
-#define pims_debug(tag, frmt, args...)   __ug_log(LOG_DEBUG,   tag, frmt, ##args)
-#define pims_info(tag, frmt, args...)    __ug_log(LOG_INFO,    tag, frmt, ##args)
-#define pims_warn(tag, frmt, args...)    __ug_log(LOG_WARN,    tag, frmt, ##args)
-#define pims_error(tag, frmt, args...)   __ug_log(LOG_ERROR,   tag, frmt, ##args)
-
-#ifndef TAG_NAME // SET default TAG
-#define TAG_NAME    TAG_IPC
-#endif
-
-#define PIMS_VERBOSE_TAG(frmt, args...) pims_verbose(TAG_NAME, frmt, ##args);
-#define PIMS_DEBUG_TAG(frmt, args...)   pims_debug  (TAG_NAME, frmt, ##args);
-#define PIMS_INFO_TAG(frmt, args...)    pims_info   (TAG_NAME, frmt, ##args);
-#define PIMS_WARN_TAG(frmt, args...)    pims_warn   (TAG_NAME, frmt, ##args);
-#define PIMS_ERROR_TAG(frmt, args...)   pims_error  (TAG_NAME, frmt, ##args);
+#define ENTER()	PIMS_DEBUG_TAG(">>>>>>>> called")
+#define LEAVE()	PIMS_DEBUG_TAG("<<<<<<<< ended")
 
 //#define VERBOSE(frmt, args...)  PIMS_VERBOSE_TAG(frmt, ##args)
 #define VERBOSE(frmt, args...)
@@ -70,14 +47,21 @@ extern "C"
 #define WARNING(frmt, args...)  PIMS_WARN_TAG(frmt, ##args)
 #define ERROR(frmt, args...)    PIMS_ERROR_TAG(frmt, ##args)
 
-#define ASSERT(expr) \
-    if (!(expr)) \
-    {   \
-        ERROR("Assertion %s", #expr); \
-    } \
-    assert(expr)
+#define WARN_IF(expr, fmt, arg...) do { \
+	if (expr) { \
+		ERROR(fmt, ##arg); \
+	} \
+} while (0)
 
-#ifdef _cplusplus
+
+#define ASSERT(expr) \
+	if (!(expr)) \
+	{   \
+		ERROR("Assertion %s", #expr); \
+	} \
+	assert(expr)
+
+#ifdef __cplusplus
 }
 #endif
 
