@@ -34,6 +34,7 @@ extern "C"
 
 typedef void* pims_ipc_h;
 typedef void* pims_ipc_data_h;
+typedef void* pims_ipc_client_info_h;
 
 typedef enum {
     PIMS_IPC_DATA_TYPE_INVALID,
