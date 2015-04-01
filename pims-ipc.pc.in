@@ -7,7 +7,7 @@ includedir=@INCLUDE_INSTALL_DIR@/pims-ipc
 
 Name: @PROJECT_NAME@
 Description: @PROJECT_NAME@ library
-Version: @VERSION@
+Version: @FULLVER@
 Requires: glib-2.0
 Libs: -L${libdir} -l@PROJECT_NAME@
 Cflags: -I${includedir}

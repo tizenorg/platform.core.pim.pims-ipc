@@ -40,6 +40,10 @@ void pims_ipc_svc_run_main_loop(GMainLoop* main_loop);
 
 void pims_ipc_svc_set_client_disconnected_cb(pims_ipc_svc_client_disconnected_cb callback, void *userdata);
 
+int pims_ipc_svc_get_smack_label(pims_ipc_h ipc, char **p_smack);
+bool pims_ipc_svc_check_privilege(pims_ipc_h ipc, char *privilege);
+
+
 #ifdef __cplusplus
 }
 #endif
