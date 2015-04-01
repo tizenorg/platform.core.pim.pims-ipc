@@ -38,6 +38,10 @@
 #include <sys/socket.h>		//socket
 #include <sys/types.h>
 
+#include <cynara-client.h>
+#include <cynara-session.h>
+#include <cynara-creds-socket.h>
+
 #include "pims-internal.h"
 #include "pims-debug.h"
 #include "pims-socket.h"
@@ -92,7 +96,14 @@ typedef struct {
 	// managed by manager, router find idle worker when connecting new client in router thread => remove from idle workers
 	GList *workers;		 // worker_fd list, not need mutex
 	/////////////////////////////////////////////
+	GHashTable *client_info_map; // key client_id, data : struct client_cridencial
 } pims_ipc_svc_s;
+
+struct client_info_s {
+	char *smack;
+	char *uid;
+	char *client_session;
+};
 
 typedef struct {
 	char *service;
@@ -147,6 +158,7 @@ typedef struct {
 	pthread_mutex_t raw_data_mutex;
 }pims_ipc_request_s;
 
+static cynara *_cynara = NULL;
 static pims_ipc_svc_s *_g_singleton = NULL;
 static pims_ipc_svc_for_publish_s *_g_singleton_for_publish = NULL;
 
@@ -182,6 +194,11 @@ static void __worker_data_free(gpointer data)
 	free(worker_data);
 }
 
+static void _free_client_info(gpointer p)
+{
+	pims_ipc_svc_destroy_client_info(p);
+}
+
 API int pims_ipc_svc_init(char *service, gid_t group, mode_t mode)
 {
 	if (_g_singleton) {
@@ -203,6 +220,7 @@ API int pims_ipc_svc_init(char *service, gid_t group, mode_t mode)
 	ASSERT(_g_singleton->request_data_queue);
 	_g_singleton->client_worker_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);		// client id - worker_fd mapping
 	ASSERT(_g_singleton->client_worker_map);
+	_g_singleton->client_info_map = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, _free_client_info);
 	_g_singleton->delay_count = 0;
 
 	pthread_mutex_init(&_g_singleton->task_fds_mutex, 0);
@@ -215,6 +233,7 @@ API int pims_ipc_svc_init(char *service, gid_t group, mode_t mode)
 	pthread_mutex_init(&_g_singleton->manager_queue_from_worker_mutex, 0);
 	_g_singleton->manager_queue_from_worker = NULL;
 	_g_singleton->workers = NULL;
+
 
 	_g_singleton->epoll_stop_thread = false;
 
@@ -389,7 +408,7 @@ API int pims_ipc_svc_publish(char *module, char *event, pims_ipc_data_h data)
 	return 0;
 }
 
-static void __run_callback(int worker_id, char *call_id, pims_ipc_data_h dhandle_in, pims_ipc_data_h *dhandle_out)
+static void __run_callback(int client_fd, char *call_id, pims_ipc_data_h dhandle_in, pims_ipc_data_h *dhandle_out)
 {
 	pims_ipc_svc_cb_s *cb_data = NULL;
 
@@ -401,7 +420,7 @@ static void __run_callback(int worker_id, char *call_id, pims_ipc_data_h dhandle
 		return;
 	}
 
-	cb_data->callback((pims_ipc_h)worker_id, dhandle_in, dhandle_out, cb_data->user_data);
+	cb_data->callback((pims_ipc_h)client_fd, dhandle_in, dhandle_out, cb_data->user_data);
 }
 
 static void __make_raw_data(const char *call_id, int seq_no, pims_ipc_data_h data, pims_ipc_raw_data_s**out)
@@ -612,6 +631,8 @@ static void* __worker_loop(void *data)
 		ERROR("client fd closed, worker_fd : %d", worker_fd);
 	INFO("task thread terminated --------------------------- (worker_fd : %d)", worker_fd);
 
+	g_hash_table_remove(ipc_svc->client_info_map, GINT_TO_POINTER(worker_id));
+
 	pthread_mutex_lock(&ipc_svc->task_fds_mutex);
 	g_hash_table_remove(ipc_svc->task_fds, GINT_TO_POINTER(worker_fd));		// __worker_data_free will be called
 	pthread_mutex_unlock(&ipc_svc->task_fds_mutex);
@@ -647,20 +668,20 @@ static gboolean __is_worker_available()
 		return FALSE;
 }
 
-static int __get_worker(const char *client_id, int *worker_id)
+static int __get_worker(const char *client_id, int *worker_fd)
 {
 	ASSERT(client_id);
-	ASSERT(worker_id);
+	ASSERT(worker_fd);
 
 	if (!__is_worker_available()) {
 		ERROR("There is no idle worker");
 		return -1;
 	}
-	*worker_id = (int)(g_list_first(_g_singleton->workers)->data);
+	*worker_fd = (int)(g_list_first(_g_singleton->workers)->data);
 	_g_singleton->workers = g_list_delete_link(_g_singleton->workers,
 			g_list_first(_g_singleton->workers));
 
-	g_hash_table_insert(_g_singleton->client_worker_map, g_strdup(client_id), GINT_TO_POINTER(*worker_id));
+	g_hash_table_insert(_g_singleton->client_worker_map, g_strdup(client_id), GINT_TO_POINTER(*worker_fd));
 
 	return 0;
 }
@@ -712,6 +733,17 @@ static bool __worker_raw_data_push(pims_ipc_worker_data_s *worker_data, int clie
 	pthread_mutex_unlock(&worker_data->queue_mutex);
 
 	return true;
+}
+
+static int _find_worker_id(pims_ipc_svc_s *ipc_svc, int worker_fd)
+{
+	pims_ipc_worker_data_s *worker_data = NULL;
+	worker_data = g_hash_table_lookup(ipc_svc->task_fds, GINT_TO_POINTER(worker_fd));
+	if (NULL == worker_data) {
+		ERROR("g_hash_table_lookup(%d) return NULL", worker_fd);
+		return -1;
+	}
+	return worker_data->worker_id;
 }
 
 static int __process_router_event(pims_ipc_svc_s *ipc_svc, gboolean for_queue)
@@ -767,6 +799,11 @@ static int __process_router_event(pims_ipc_svc_s *ipc_svc, gboolean for_queue)
 					is_valid = TRUE;
 					break;
 				}
+				int worker_id = _find_worker_id(ipc_svc, worker_fd);
+				pims_ipc_client_info_h client_info = NULL;
+				if (0 != pims_ipc_svc_create_client_info(client_fd, &client_info))
+					ERROR("pims_ipc_svc_create_client_info() Fail");
+				g_hash_table_insert(ipc_svc->client_info_map, GINT_TO_POINTER(worker_id), client_info);
 			}
 			else {
 				// Find a worker
@@ -1122,7 +1159,6 @@ static gboolean __request_handler(GIOChannel *src, GIOCondition condition, gpoin
 			ipc_svc->manager_queue_from_epoll = g_list_append(ipc_svc->manager_queue_from_epoll, (void*)g_strdup(client_id));
 			pthread_mutex_unlock(&ipc_svc->manager_queue_from_epoll_mutex);
 			write_command(ipc_svc->manager, 1);
-
 			__delete_request_queue(ipc_svc, client_id);
 			free(client_id);
 		}
@@ -1457,6 +1493,33 @@ static void* __router_loop(void *data)
 	return NULL;
 }
 
+static void _initialize_cynara(void)
+{
+	int ret;
+
+	ret = cynara_initialize(&_cynara, NULL);
+	if (CYNARA_API_SUCCESS != ret) {
+		char errmsg[1024];
+		cynara_strerror(ret, errmsg, sizeof(errmsg));
+		ERROR("cynara_initialize() Fail(%d,%s)", ret, errmsg);
+	}
+}
+
+static void _finalize_cynara(void)
+{
+	int ret;
+	if (NULL == _cynara)
+		return;
+
+	ret = cynara_finish(_cynara);
+	if (CYNARA_API_SUCCESS != ret) {
+		char errmsg[1024];
+		cynara_strerror(ret, errmsg, sizeof(errmsg));
+		ERROR("cynara_finish() Fail(%d,%s)", ret, errmsg);
+	}
+	_cynara = NULL;
+}
+
 API void pims_ipc_svc_run_main_loop(GMainLoop* loop)
 {
 	int ret = -1;
@@ -1465,6 +1528,8 @@ API void pims_ipc_svc_run_main_loop(GMainLoop* loop)
 	if (main_loop == NULL) {
 		main_loop = g_main_loop_new(NULL, FALSE);
 	}
+
+	_initialize_cynara();
 
 	if (_g_singleton_for_publish)
 		__launch_thread(__publish_loop, _g_singleton_for_publish);
@@ -1484,6 +1549,8 @@ API void pims_ipc_svc_run_main_loop(GMainLoop* loop)
 
 	g_main_loop_run(main_loop);
 
+	_finalize_cynara();
+
 	if (_g_singleton)
 		__close_router_fd(_g_singleton);
 
@@ -1502,4 +1569,125 @@ API void pims_ipc_svc_set_client_disconnected_cb(pims_ipc_svc_client_disconnecte
 	_client_disconnected_cb.user_data = user_data;
 }
 
+API pims_ipc_client_info_h pims_ipc_svc_find_client_info(pims_ipc_h ipc)
+{
+	int worker_id = (int)ipc;
+
+	struct client_info_s *client_info = NULL;
+	if (NULL == _g_singleton) {
+		ERROR("_g_signleton is NULL");
+		return NULL;
+	}
+
+	if (NULL == _g_singleton->client_info_map) {
+		ERROR("_g_singleton->client_info_map is NULL");
+		return NULL;
+	}
+
+	client_info = g_hash_table_lookup(_g_singleton->client_info_map, GINT_TO_POINTER(worker_id));
+	if (NULL == client_info) {
+		ERROR("g_hash_table_lookup(%d) return NULL", worker_id);
+		return NULL;
+	}
+	return client_info;
+}
+
+API int pims_ipc_svc_create_client_info(int fd, pims_ipc_client_info_h *p_client_info)
+{
+	int ret;
+	pid_t pid;
+	char errmsg[1024];
+
+	struct client_info_s *client_info = calloc(1, sizeof(struct client_info_s));
+	if (NULL == client_info) {
+		ERROR("calloc() return NULL");
+		return -1;
+	}
+
+	ret = cynara_creds_socket_get_client(fd, CLIENT_METHOD_SMACK, &(client_info->smack));
+	if (CYNARA_API_SUCCESS != ret) {
+		cynara_strerror(ret, errmsg, sizeof(errmsg));
+		ERROR("cynara_creds_socket_get_client() Fail(%d,%s)", ret, errmsg);
+		pims_ipc_svc_destroy_client_info((pims_ipc_client_info_h)client_info);
+		return -1;
+	}
+
+	ret = cynara_creds_socket_get_user(fd, USER_METHOD_UID, &(client_info->uid));
+	if (CYNARA_API_SUCCESS != ret) {
+		cynara_strerror(ret, errmsg, sizeof(errmsg));
+		ERROR("cynara_creds_socket_get_user() Fail(%d,%s)", ret, errmsg);
+		pims_ipc_svc_destroy_client_info((pims_ipc_client_info_h)client_info);
+		return -1;
+	}
+
+	ret = cynara_creds_socket_get_pid(fd, &pid);
+	if (CYNARA_API_SUCCESS != ret) {
+		cynara_strerror(ret, errmsg, sizeof(errmsg));
+		ERROR("cynara_creds_socket_get_pid() Fail(%d,%s)", ret, errmsg);
+		pims_ipc_svc_destroy_client_info((pims_ipc_client_info_h)client_info);
+		return -1;
+	}
+
+	client_info->client_session = cynara_session_from_pid(pid);
+	if (NULL == client_info->client_session) {
+		ERROR("cynara_session_from_pid() return NULL");
+		pims_ipc_svc_destroy_client_info((pims_ipc_client_info_h)client_info);
+		return -1;
+	}
+	*p_client_info = client_info;
+
+	return 0;
+}
+
+
+API bool pims_ipc_svc_check_privilege(pims_ipc_client_info_h client_info, char *privilege)
+{
+	int ret;
+
+	struct client_info_s *info = client_info;
+
+	if (NULL == info) {
+		ERROR("info is NULL");
+		return false;
+	}
+
+	if (NULL == privilege) {
+		ERROR("privilege is NULL");
+		return false;
+	}
+
+	ret = cynara_check(_cynara, info->smack, info->client_session, info->uid, privilege);
+	if (CYNARA_API_ACCESS_ALLOWED == ret)
+		return true;
+
+	return false;
+}
+
+API int pims_ipc_svc_get_smack_label(pims_ipc_client_info_h client_info, char **p_smack)
+{
+	if (NULL == client_info) {
+		ERROR("client_info is NULL");
+		return -1;
+	}
+
+	struct client_info_s *info = client_info;
+	*p_smack = g_strdup(info->smack);
+	if (NULL == p_smack) {
+		ERROR("g_strdup() return NULL");
+		return -1;
+	}
+
+	return 0;
+}
+
+API void pims_ipc_svc_destroy_client_info(pims_ipc_client_info_h client_info)
+{
+	if (NULL == client_info)
+		return;
+	struct client_info_s *info = client_info;
+	free(info->smack);
+	free(info->uid);
+	free(info->client_session);
+	free(info);
+}
 

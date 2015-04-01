@@ -40,6 +40,13 @@ void pims_ipc_svc_run_main_loop(GMainLoop* main_loop);
 
 void pims_ipc_svc_set_client_disconnected_cb(pims_ipc_svc_client_disconnected_cb callback, void *userdata);
 
+pims_ipc_client_info_h pims_ipc_svc_find_client_info(pims_ipc_h ipc);
+int pims_ipc_svc_create_client_info(int fd, pims_ipc_client_info_h *p_client_info);
+int pims_ipc_svc_get_smack_label(pims_ipc_client_info_h client_info, char **p_smack);
+bool pims_ipc_svc_check_privilege(pims_ipc_client_info_h client_info, char *privilege);
+void pims_ipc_svc_destroy_client_info(pims_ipc_client_info_h client_info);
+
+
 #ifdef __cplusplus
 }
 #endif
