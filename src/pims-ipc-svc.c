@@ -389,7 +389,7 @@ API int pims_ipc_svc_publish(char *module, char *event, pims_ipc_data_h data)
 	return 0;
 }
 
-static void __run_callback(int worker_id, char *call_id, pims_ipc_data_h dhandle_in, pims_ipc_data_h *dhandle_out)
+static void __run_callback(int client_fd, char *call_id, pims_ipc_data_h dhandle_in, pims_ipc_data_h *dhandle_out)
 {
 	pims_ipc_svc_cb_s *cb_data = NULL;
 
@@ -401,7 +401,7 @@ static void __run_callback(int worker_id, char *call_id, pims_ipc_data_h dhandle
 		return;
 	}
 
-	cb_data->callback((pims_ipc_h)worker_id, dhandle_in, dhandle_out, cb_data->user_data);
+	cb_data->callback((pims_ipc_h)client_fd, dhandle_in, dhandle_out, cb_data->user_data);
 }
 
 static void __make_raw_data(const char *call_id, int seq_no, pims_ipc_data_h data, pims_ipc_raw_data_s**out)
@@ -588,7 +588,7 @@ static void* __worker_loop(void *data)
 						raw_data->data = NULL;
 						raw_data->data_len = 0;
 						raw_data->is_data = false;
-						__run_callback(worker_id, raw_data->call_id, data_in, &data_out);
+						__run_callback(worker_data->client_fd, raw_data->call_id, data_in, &data_out);
 						pims_ipc_data_destroy(data_in);
 					}
 
