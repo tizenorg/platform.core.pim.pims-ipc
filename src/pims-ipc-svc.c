@@ -220,7 +220,7 @@ API int pims_ipc_svc_init(char *service, gid_t group, mode_t mode)
 
 	int ret = cynara_initialize(&_g_singleton->cynara, NULL);
 	if (CYNARA_API_SUCCESS != ret) {
-		char errmsg[1024];
+		char errmsg[1024] = {0};
 		cynara_strerror(ret, errmsg, sizeof(errmsg));
 		ERROR("cynara_initialize() Fail(%d,%s)", ret, errmsg);
 		return -1;
@@ -304,7 +304,7 @@ API int pims_ipc_svc_deinit(void)
 	pthread_mutex_lock(&_g_singleton->cynara_mutex);
 	int ret = cynara_finish(_g_singleton->cynara);
 	if (CYNARA_API_SUCCESS != ret) {
-		char errmsg[1024];
+		char errmsg[1024] = {0};
 		cynara_strerror(ret, errmsg, sizeof(errmsg));
 		ERROR("cynara_finish() Fail(%d,%s)", ret, errmsg);
 	}
@@ -796,7 +796,7 @@ static int _create_client_info(int fd, pims_ipc_client_info_s **p_client_info)
 {
 	int ret;
 	pid_t pid;
-	char errmsg[1024];
+	char errmsg[1024] = {0};
 
 	pims_ipc_client_info_s *client_info = calloc(1, sizeof(pims_ipc_client_info_s));
 	if (NULL == client_info) {
