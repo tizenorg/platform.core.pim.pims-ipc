@@ -218,15 +218,9 @@ API int pims_ipc_svc_init(char *service, gid_t group, mode_t mode)
 		return -1;
 	}
 
-	int ret = cynara_initialize(&_g_singleton->cynara, NULL);
-	if (CYNARA_API_SUCCESS != ret) {
-		char errmsg[1024] = {0};
-		cynara_strerror(ret, errmsg, sizeof(errmsg));
-		ERROR("cynara_initialize() Fail(%d,%s)", ret, errmsg);
-		return -1;
-	}
-
 	_g_singleton = g_new0(pims_ipc_svc_s, 1);
+	ASSERT(_g_singleton);
+
 	_g_singleton->service = g_strdup(service);
 	_g_singleton->group = group;
 	_g_singleton->mode = mode;
@@ -262,6 +256,13 @@ API int pims_ipc_svc_init(char *service, gid_t group, mode_t mode)
 	pthread_mutex_init(&_g_singleton->cynara_mutex, 0);
 	_g_singleton->epoll_stop_thread = false;
 
+	int ret = cynara_initialize(&_g_singleton->cynara, NULL);
+	if (CYNARA_API_SUCCESS != ret) {
+		char errmsg[1024] = {0};
+		cynara_strerror(ret, errmsg, sizeof(errmsg));
+		ERROR("cynara_initialize() Fail(%d,%s)", ret, errmsg);
+		return -1;
+	}
 	return 0;
 }
 
