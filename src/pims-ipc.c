@@ -24,13 +24,13 @@
 #include <glib.h>
 #include <stdint.h>
 #include <pthread.h>
-#include <poll.h>			// pollfds
-#include <sys/un.h>		// sockaddr_un
-#include <sys/ioctl.h>		// ioctl
-#include <sys/socket.h>		//socket
+#include <poll.h> // pollfds
+#include <sys/un.h> // sockaddr_un
+#include <sys/ioctl.h> // ioctl
+#include <sys/socket.h> //socket
 #include <sys/types.h>
-#include <sys/epoll.h>		// epoll
-#include <sys/eventfd.h>	// eventfd
+#include <sys/epoll.h> // epoll
+#include <sys/eventfd.h> // eventfd
 #include <fcntl.h>
 #include <errno.h>
 
@@ -96,6 +96,14 @@ typedef struct
 
 static unsigned int ref_cnt;
 static GList *subscribe_handles;
+
+typedef struct {
+	pims_ipc_server_disconnected_cb callback;
+	void *user_data;
+} pims_ipc_server_disconnected_cb_t;
+
+static pims_ipc_server_disconnected_cb_t _server_disconnected_cb = {NULL, NULL};
+static pthread_mutex_t __disconnect_cb_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void __sub_data_free(gpointer user_data)
 {
@@ -464,6 +472,7 @@ static int __subscribe_data(pims_ipc_s * handle)
 		/* when server or client closed socket */
 		if (len == 0) {
 			INFO("[IPC Socket] connection is closed");
+			ret = -1;
 			break;
 		}
 
@@ -539,6 +548,15 @@ static int __subscribe_data(pims_ipc_s * handle)
 	return ret;
 }
 
+static gboolean __hung_up_cb(gpointer data)
+{
+	pthread_mutex_lock(&__disconnect_cb_mutex);
+	if (_server_disconnected_cb.callback)
+		_server_disconnected_cb.callback(_server_disconnected_cb.user_data);
+	pthread_mutex_unlock(&__disconnect_cb_mutex);
+	return FALSE;
+}
+
 static void* __io_thread(void *data)
 {
 	pims_ipc_s *handle = data;
@@ -572,13 +590,17 @@ static void* __io_thread(void *data)
 		for (i = 0; i < event_num; i++) {
 			if (events[i].events & EPOLLHUP) {
 				ERROR("server fd closed");
+				g_idle_add(__hung_up_cb, NULL);
 				handle->epoll_stop_thread = true;
 				break;
 			}
 
 			if (events[i].events & EPOLLIN) {
-				if(__subscribe_data(handle) < 0)
+				if(__subscribe_data(handle) < 0) {
+					ERROR("server fd closed");
+					g_idle_add(__hung_up_cb, NULL);
 					break;
+				}
 			}
 		}
 	}
@@ -1029,3 +1051,20 @@ API int pims_ipc_unsubscribe(pims_ipc_h ipc, char *module, char *event)
 	return 0;
 }
 
+API int pims_ipc_unset_server_disconnected_cb()
+{
+	pthread_mutex_lock(&__disconnect_cb_mutex);
+	_server_disconnected_cb.callback = NULL;
+	_server_disconnected_cb.user_data = NULL;
+	pthread_mutex_unlock(&__disconnect_cb_mutex);
+	return 0;
+}
+
+API int pims_ipc_set_server_disconnected_cb(pims_ipc_server_disconnected_cb callback, void *user_data)
+{
+	pthread_mutex_lock(&__disconnect_cb_mutex);
+	_server_disconnected_cb.callback = callback;
+	_server_disconnected_cb.user_data = user_data;
+	pthread_mutex_unlock(&__disconnect_cb_mutex);
+	return 0;
+}
