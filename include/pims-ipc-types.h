@@ -55,6 +55,7 @@ typedef void (*pims_ipc_svc_client_disconnected_cb)(pims_ipc_h ipc, void *userda
 
 typedef void (*pims_ipc_call_async_cb)(pims_ipc_h ipc, pims_ipc_data_h data_out, void *userdata);
 typedef void (*pims_ipc_subscribe_cb)(pims_ipc_h ipc, pims_ipc_data_h data, void *userdata);
+typedef void (*pims_ipc_server_disconnected_cb)(void *userdata);
 
 
 #ifdef __cplusplus

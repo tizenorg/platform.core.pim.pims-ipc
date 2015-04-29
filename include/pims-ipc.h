@@ -39,6 +39,9 @@ pims_ipc_h pims_ipc_create_for_subscribe(char *service);
 void pims_ipc_destroy_for_subscribe(pims_ipc_h ipc);
 int pims_ipc_subscribe(pims_ipc_h ipc, char *module, char *event, pims_ipc_subscribe_cb callback, void *userdata);
 int pims_ipc_unsubscribe(pims_ipc_h ipc, char *module, char *event);
+int pims_ipc_set_server_disconnected_cb(pims_ipc_server_disconnected_cb callback, void *user_data);
+int pims_ipc_unset_server_disconnected_cb();
+
 
 #ifdef __cplusplus
 }
