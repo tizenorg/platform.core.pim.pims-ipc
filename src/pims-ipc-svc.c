@@ -1203,7 +1203,7 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 	temp->data_len = 0;
 
 	int ret = 0;
-	unsigned int read_len = 0;
+	int read_len = 0;
 	unsigned int total_len = 0;
 	unsigned int is_data = FALSE;
 
