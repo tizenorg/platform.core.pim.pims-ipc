@@ -1,7 +1,7 @@
 /*
  * PIMS IPC
  *
- * Copyright (c) 2012 - 2013 Samsung Electronics Co., Ltd. All rights reserved.
+ * Copyright (c) 2012 - 2015 Samsung Electronics Co., Ltd. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the License);
  * you may not use this file except in compliance with the License.
@@ -55,10 +55,19 @@ API pims_ipc_data_h pims_ipc_data_create_with_size(unsigned int size, int flags)
 	pims_ipc_data_s *handle = NULL;
 
 	handle = calloc(1, sizeof(pims_ipc_data_s));
+	if (NULL == handle) {
+		ERROR("calloc() Fail");
+		return NULL;
+	}
 	handle->alloc_size = size;
 	handle->free_size = size;
 	handle->buf_size = 0;
 	handle->buf = calloc(1, size);
+	if (NULL == handle->buf) {
+		ERROR("calloc() Fail");
+		free(handle);
+		return NULL;
+	}
 	handle->pos = handle->buf;
 	handle->created = 1;
 	handle->buf_alloced = 1;
@@ -115,6 +124,10 @@ API int pims_ipc_data_put(pims_ipc_data_h data, void *buf, unsigned int size)
 		while (new_size < handle->buf_size + used_size)
 			new_size *= 2;
 		handle->buf = realloc(handle->buf, new_size);
+		if (NULL == handle->buf) {
+			ERROR("realloc() Fail");
+			return -1;
+		}
 		handle->alloc_size = new_size;
 		handle->free_size = handle->alloc_size - handle->buf_size;
 		handle->pos = handle->buf;
@@ -185,6 +198,10 @@ pims_ipc_data_h pims_ipc_data_steal_unmarshal(void *buf, unsigned int size)
 
 	VERBOSE("size : %d", size);
 	handle = calloc(1, sizeof(pims_ipc_data_s));
+	if (NULL == handle) {
+		ERROR("calloc() Fail");
+		return NULL;
+	}
 	handle->alloc_size = size;
 	handle->free_size = 0;
 	handle->buf_size = handle->alloc_size;

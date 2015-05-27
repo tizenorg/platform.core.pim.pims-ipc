@@ -1,7 +1,7 @@
 /*
  * PIMS IPC
  *
- * Copyright (c) 2012 - 2013 Samsung Electronics Co., Ltd. All rights reserved.
+ * Copyright (c) 2012 - 2015 Samsung Electronics Co., Ltd. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the License);
  * you may not use this file except in compliance with the License.
@@ -311,6 +311,10 @@ static int __pims_ipc_read_data(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 		if (total_len == read_len) {
 			// send identity
 			data = pims_ipc_data_create(0);
+			if (NULL == data) {
+				ERROR("pims_ipc_data_create() Fail");
+				break;
+			}
 			ret = pims_ipc_data_put(data, client_id, client_id_len);
 			if (ret != 0)
 				WARNING("pims_ipc_data_put fail(%d)", ret);
@@ -350,6 +354,10 @@ static int __pims_ipc_read_data(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 			read_len += ret;
 
 			data = pims_ipc_data_steal_unmarshal(buf, data_len);
+			if (NULL == data) {
+				ERROR("pims_ipc_data_steal_unmarshal() Fail");
+				break;
+			}
 			buf = NULL;
 		}
 
@@ -382,7 +390,11 @@ static int __pims_ipc_read_data(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 static int __pims_ipc_receive(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 {
 	int ret = -1;
-	struct pollfd *pollfds = (struct pollfd*) malloc (1 * sizeof (struct pollfd));
+	struct pollfd *pollfds = (struct pollfd*)calloc(1, sizeof(struct pollfd));
+	if (NULL == pollfds) {
+		ERROR("calloc() Fail");
+		return -1;
+	}
 
 	pollfds[0].fd = handle->fd;
 	pollfds[0].events = POLLIN | POLLERR | POLLHUP;
@@ -500,9 +512,17 @@ static int __subscribe_data(pims_ipc_s * handle)
 			read_len += ret;
 
 			dhandle = pims_ipc_data_steal_unmarshal(buf, data_len);
+			if (NULL == dhandle) {
+				ERROR("pims_ipc_data_steal_unmarshal() Fail");
+				break;
+			}
 			buf = NULL;
 
 			pims_ipc_subscribe_data_s *sub_data = (pims_ipc_subscribe_data_s *)calloc(1, sizeof(pims_ipc_subscribe_data_s));
+			if (NULL == sub_data) {
+				ERROR("calloc() Fail");
+				break;
+			}
 			sub_data->handle = dhandle;
 			sub_data->call_id = call_id;
 			call_id = NULL;
@@ -513,7 +533,7 @@ static int __subscribe_data(pims_ipc_s * handle)
 			write_command(handle->subscribe_fd, 1);
 		}
 		ret = 0;
-	}while(0);
+	} while(0);
 
 	free(call_id);
 	free(buf);
