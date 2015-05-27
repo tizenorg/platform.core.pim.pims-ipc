@@ -55,6 +55,10 @@ API pims_ipc_data_h pims_ipc_data_create_with_size(unsigned int size, int flags)
 	pims_ipc_data_s *handle = NULL;
 
 	handle = calloc(1, sizeof(pims_ipc_data_s));
+	if (NULL == handle) {
+		ERROR("calloc() Fail");
+		return NULL;
+	}
 	handle->alloc_size = size;
 	handle->free_size = size;
 	handle->buf_size = 0;
@@ -185,6 +189,10 @@ pims_ipc_data_h pims_ipc_data_steal_unmarshal(void *buf, unsigned int size)
 
 	VERBOSE("size : %d", size);
 	handle = calloc(1, sizeof(pims_ipc_data_s));
+	if (NULL == handle) {
+		ERROR("calloc() Fail");
+		return NULL;
+	}
 	handle->alloc_size = size;
 	handle->free_size = 0;
 	handle->buf_size = handle->alloc_size;

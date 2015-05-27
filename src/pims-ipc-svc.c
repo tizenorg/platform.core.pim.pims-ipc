@@ -463,10 +463,19 @@ static void __run_callback(int worker_id, char *call_id, pims_ipc_data_h dhandle
 	cb_data->callback((pims_ipc_h)worker_id, dhandle_in, dhandle_out, cb_data->user_data);
 }
 
-static void __make_raw_data(const char *call_id, int seq_no, pims_ipc_data_h data, pims_ipc_raw_data_s**out)
+static void __make_raw_data(const char *call_id, int seq_no, pims_ipc_data_h data, pims_ipc_raw_data_s **out)
 {
+	if (NULL == out) {
+		ERROR("Invalid parameter:out is NULL");
+		return;
+	}
+
 	pims_ipc_raw_data_s *raw_data = NULL;
 	raw_data = (pims_ipc_raw_data_s*)calloc(1, sizeof(pims_ipc_raw_data_s));
+	if (NULL == raw_data) {
+		ERROR("calloc() Fail");
+		return;
+	}
 	pims_ipc_data_s *data_in = (pims_ipc_data_s*)data;
 
 	raw_data->call_id = strdup(call_id);
@@ -476,6 +485,12 @@ static void __make_raw_data(const char *call_id, int seq_no, pims_ipc_data_h dat
 	if (data_in && data_in->buf_size > 0) {
 		raw_data->is_data = TRUE;
 		raw_data->data = calloc(1, data_in->buf_size+1);
+		if (NULL == raw_data->data) {
+			ERROR("calloc() Fail");
+			free(raw_data->call_id);
+			free(raw_data);
+			return;
+		}
 		memcpy(raw_data->data, data_in->buf, data_in->buf_size);
 		raw_data->data_len = data_in->buf_size;
 	}
@@ -590,6 +605,11 @@ static void* __worker_loop(void *data)
 	worker_id = (int)pthread_self();
 
 	worker_data = calloc(1, sizeof(pims_ipc_worker_data_s));
+	if (NULL == worker_data) {
+		ERROR("calloc() Fail");
+		close(worker_fd);
+		return NULL;
+	}
 	worker_data->fd = worker_fd;
 	worker_data->worker_id = worker_id;
 	worker_data->client_fd = -1;
@@ -607,7 +627,14 @@ static void* __worker_loop(void *data)
 	write_command(ipc_svc->manager, 1);
 	DEBUG("worker register to manager : worker_id(%08x00), worker_fd(%d)\n", worker_id, worker_fd);
 
-	struct pollfd *pollfds = (struct pollfd*) malloc (1 * sizeof (struct pollfd));
+	struct pollfd *pollfds = (struct pollfd*)calloc(1, sizeof(struct pollfd));
+	if (NULL == pollfds) {
+		ERROR("calloc() Fail");
+		g_hash_table_remove(ipc_svc->task_fds, GINT_TO_POINTER(worker_fd));
+		free(worker_data);
+		close(worker_fd);
+		return NULL;
+	}
 	pollfds[0].fd = worker_fd;
 	pollfds[0].events = POLLIN;
 
@@ -644,6 +671,10 @@ static void* __worker_loop(void *data)
 					}
 					else {
 						data_in = pims_ipc_data_steal_unmarshal(raw_data->data, raw_data->data_len);
+						if (NULL == data_in) {
+							ERROR("pims_ipc_data_steal_unmarshal() Fail");
+							break;
+						}
 						raw_data->data = NULL;
 						raw_data->data_len = 0;
 						raw_data->is_data = false;
@@ -1089,6 +1120,11 @@ static void __request_push(pims_ipc_svc_s *ipc_svc, char *client_id, int client_
 	}
 	else {
 		data_queue = calloc(1, sizeof(pims_ipc_request_s));
+		if (NULL == data_queue) {
+			ERROR("calloc() Fail");
+			pthread_mutex_unlock(&ipc_svc->request_data_queue_mutex);
+			return;
+		}
 		data_queue->request_count = 0;
 		pthread_mutex_init(&data_queue->raw_data_mutex, 0);
 
@@ -1193,6 +1229,10 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 	}
 
 	temp = (pims_ipc_raw_data_s*)calloc(1, sizeof(pims_ipc_raw_data_s));
+	if (NULL == temp) {
+		ERROR("calloc() Fail");
+		return -1;
+	}
 	temp->client_id = NULL;
 	temp->client_id_len = 0;
 	temp->call_id = NULL;
@@ -1219,6 +1259,11 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 		read_len += ret;
 
 		temp->client_id = calloc(1, temp->client_id_len+1);
+		if (NULL == temp->client_id) {
+			ERROR("calloc() Fail");
+			ret = -1;
+			break;
+		}
 		ret = socket_recv(fd, (void *)&(temp->client_id), temp->client_id_len);
 		if (ret < 0) {	 ERROR("socket_recv error"); break;		}
 		read_len += ret;
@@ -1240,6 +1285,11 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 		read_len += ret;
 
 		temp->call_id = calloc(1, temp->call_id_len+1);
+		if (NULL == temp->call_id) {
+			ERROR("calloc() Fail");
+			ret = -1;
+			break;
+		}
 		ret = socket_recv(fd, (void *)&(temp->call_id), temp->call_id_len);
 		if (ret < 0) {	 ERROR("socket_recv error"); break;		}
 		read_len += ret;
@@ -1257,6 +1307,11 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 			read_len += ret;
 
 			temp->data = calloc(1, temp->data_len+1);
+			if (NULL == temp->data) {
+				ERROR("calloc() Fail");
+				ret = -1;
+				break;
+			}
 			ret = socket_recv(fd, (void *)&(temp->data), temp->data_len);
 			if (ret < 0) {	ERROR("socket_recv error"); break;		}
 			read_len += ret;
@@ -1266,7 +1321,7 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 
 		*data = temp;
 		*identity = false;
-	}while(0);
+	} while(0);
 
 	if (ret < 0) {
 		__free_raw_data(temp);
@@ -1319,6 +1374,12 @@ static gboolean __request_handler(GIOChannel *src, GIOCondition condition, gpoin
 		// send command to router
 		if (identity) {
 			pims_ipc_client_map_s *client = (pims_ipc_client_map_s*)calloc(1, sizeof(pims_ipc_client_map_s));
+			if (NULL == client) {
+				ERROR("calloc() Fail");
+				close(event_fd);
+				return FALSE;
+			}
+
 			client->fd = event_fd;
 
 			char temp[100];
@@ -1333,8 +1394,11 @@ static gboolean __request_handler(GIOChannel *src, GIOCondition condition, gpoin
 			ret = __send_identify(event_fd, req->seq_no, temp, strlen(temp));
 
 			__free_raw_data(req);
-			if (ret < 0)
+			if (ret < 0) {
+				ERROR("__send_identify() Fail(%d)", ret);
+				close(event_fd);
 				return FALSE;
+			}
 
 			pims_ipc_client_info_s *client_info = NULL;
 			if (0 != _create_client_info(event_fd, &client_info))
@@ -1590,8 +1654,11 @@ static void* __router_loop(void *data)
 	int fd_count = 2;
 	struct pollfd *pollfds;
 
-	pollfds = (struct pollfd*) malloc (fd_count * sizeof (struct pollfd));
-
+	pollfds = (struct pollfd*)calloc(fd_count, sizeof(struct pollfd));
+	if (NULL == pollfds) {
+		ERROR("calloc() Fail");
+		return NULL;
+	}
 	pollfds[0].fd = ipc_svc->router;
 	pollfds[0].events = POLLIN;
 	pollfds[1].fd = ipc_svc->manager;
