@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-
+#define _GNU_SOURCE
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1209,12 +1209,12 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 
 	do {
 		// total length
-		ret = read(fd, (void *)&total_len, sizeof(unsigned int));
+		ret = TEMP_FAILURE_RETRY(read(fd, (void *)&total_len, sizeof(unsigned int)));
 		if (ret < 0) {	 ERROR("read error"); break;		}
 		read_len += ret;
 
 		// client_id
-		ret  = read(fd, (void *)&(temp->client_id_len), sizeof(unsigned int));
+		ret  = TEMP_FAILURE_RETRY(read(fd, (void *)&(temp->client_id_len), sizeof(unsigned int)));
 		if (ret < 0) {	 ERROR("read error"); break;		}
 		read_len += ret;
 
@@ -1224,7 +1224,7 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 		read_len += ret;
 
 		// sequnce no
-		ret = read(fd, (void *)&(temp->seq_no), sizeof(unsigned int));
+		ret = TEMP_FAILURE_RETRY(read(fd, (void *)&(temp->seq_no), sizeof(unsigned int)));
 		if (ret < 0) {	 ERROR("read error"); break;		}
 		read_len += ret;
 
@@ -1235,7 +1235,7 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 		}
 
 		// call_id
-		ret  = read(fd, (void *)&(temp->call_id_len), sizeof(unsigned int));
+		ret  = TEMP_FAILURE_RETRY(read(fd, (void *)&(temp->call_id_len), sizeof(unsigned int)));
 		if (ret < 0)	{ ERROR("read error"); break;		}
 		read_len += ret;
 
@@ -1245,14 +1245,14 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 		read_len += ret;
 
 		// is_data
-		ret = read(fd, (void *)&(is_data), sizeof(unsigned int));
+		ret = TEMP_FAILURE_RETRY(read(fd, (void *)&(is_data), sizeof(unsigned int)));
 		if (ret < 0) {	 ERROR("read error"); break;		}
 		read_len += ret;
 
 		// data
 		if (is_data) {
 			temp->is_data = TRUE;
-			ret = read(fd, (void *)&(temp->data_len), sizeof(unsigned int));
+			ret = TEMP_FAILURE_RETRY(read(fd, (void *)&(temp->data_len), sizeof(unsigned int)));
 			if (ret < 0) {	ERROR("read error"); break;		}
 			read_len += ret;
 
