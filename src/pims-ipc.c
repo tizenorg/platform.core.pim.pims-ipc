@@ -382,7 +382,11 @@ static int __pims_ipc_read_data(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 static int __pims_ipc_receive(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 {
 	int ret = -1;
-	struct pollfd *pollfds = (struct pollfd*) malloc (1 * sizeof (struct pollfd));
+	struct pollfd *pollfds = (struct pollfd*)calloc(1, sizeof(struct pollfd));
+	if (NULL == pollfds) {
+		ERROR("calloc() Fail");
+		return -1;
+	}
 
 	pollfds[0].fd = handle->fd;
 	pollfds[0].events = POLLIN | POLLERR | POLLHUP;
@@ -503,6 +507,10 @@ static int __subscribe_data(pims_ipc_s * handle)
 			buf = NULL;
 
 			pims_ipc_subscribe_data_s *sub_data = (pims_ipc_subscribe_data_s *)calloc(1, sizeof(pims_ipc_subscribe_data_s));
+			if (NULL == sub_data) {
+				ERROR("calloc() Fail");
+				break;
+			}
 			sub_data->handle = dhandle;
 			sub_data->call_id = call_id;
 			call_id = NULL;
@@ -513,7 +521,7 @@ static int __subscribe_data(pims_ipc_s * handle)
 			write_command(handle->subscribe_fd, 1);
 		}
 		ret = 0;
-	}while(0);
+	} while(0);
 
 	free(call_id);
 	free(buf);
