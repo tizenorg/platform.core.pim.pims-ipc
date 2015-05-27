@@ -163,7 +163,7 @@ int write_command(int fd, const uint64_t cmd)
 int read_command(int fd, uint64_t *cmd)
 {
 	uint64_t dummy;
-	int len = read(fd, &dummy, sizeof(dummy));
+	int len = TEMP_FAILURE_RETRY(read(fd, &dummy, sizeof(dummy)));
 	if (len == sizeof(dummy)) {
 		*cmd = dummy;
 	}

@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -289,10 +288,10 @@ static int __pims_ipc_read_data(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 		unsigned int is_data = FALSE;
 
 		// get total_len
-		read_len = read(handle->fd, (void *)&total_len, sizeof(unsigned int));
+		read_len = TEMP_FAILURE_RETRY(read(handle->fd, (void *)&total_len, sizeof(unsigned int)));
 
 		// client_id
-		read_len += read(handle->fd, (void *)&(client_id_len), sizeof(unsigned int));
+		read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(client_id_len), sizeof(unsigned int)));
 		if (client_id_len > 0 && client_id_len < UINT_MAX-1) {
 			client_id = calloc(1, client_id_len+1);
 			if (client_id == NULL) {
@@ -307,7 +306,7 @@ static int __pims_ipc_read_data(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 		read_len += ret;
 
 		// sequence no
-		read_len += read(handle->fd, (void *)&(sequence_no), sizeof(unsigned int));
+		read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(sequence_no), sizeof(unsigned int)));
 		if (total_len == read_len) {
 			// send identity
 			data = pims_ipc_data_create(0);
@@ -317,7 +316,7 @@ static int __pims_ipc_read_data(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 			break;
 		}
 
-		read_len += read(handle->fd, (void *)&(call_id_len), sizeof(unsigned int));
+		read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(call_id_len), sizeof(unsigned int)));
 		if (call_id_len > 0 && call_id_len < UINT_MAX-1) {
 			call_id = calloc(1, call_id_len+1);
 			if (call_id == NULL) {
@@ -332,10 +331,10 @@ static int __pims_ipc_read_data(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 		if (ret < 0) {  ERROR("socket_recv error"); break;	}
 		read_len += ret;
 
-		read_len += read(handle->fd, (void *)&(is_data), sizeof(unsigned int));
+		read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(is_data), sizeof(unsigned int)));
 		if (is_data) {
 			unsigned int data_len;
-			read_len += read(handle->fd, (void *)&(data_len), sizeof(unsigned int));
+			read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(data_len), sizeof(unsigned int)));
 			if (data_len > 0 && data_len < UINT_MAX-1) {
 				buf = calloc(1, data_len+1);
 				if (buf == NULL) {
@@ -462,10 +461,10 @@ static int __subscribe_data(pims_ipc_s * handle)
 		unsigned int is_data = FALSE;
 
 		// get total_len
-		read_len = read(handle->fd, (void *)&total_len, sizeof(unsigned int));
+		read_len = TEMP_FAILURE_RETRY(read(handle->fd, (void *)&total_len, sizeof(unsigned int)));
 
 		// call_id
-		read_len += read(handle->fd, (void *)&(call_id_len), sizeof(unsigned int));
+		read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(call_id_len), sizeof(unsigned int)));
 		if (call_id_len > 0 && call_id_len < UINT_MAX-1) {
 			call_id = calloc(1, call_id_len+1);
 			if (call_id == NULL) {
@@ -481,11 +480,11 @@ static int __subscribe_data(pims_ipc_s * handle)
 		read_len += ret;
 
 		// is_data
-		read_len += read(handle->fd, (void *)&(is_data), sizeof(unsigned int));
+		read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(is_data), sizeof(unsigned int)));
 
 		if (is_data) {
 			unsigned int data_len;
-			read_len += read(handle->fd, (void *)&(data_len), sizeof(unsigned int));
+			read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(data_len), sizeof(unsigned int)));
 			if (data_len > 0 && data_len < UINT_MAX-1) {
 				buf = calloc(1, data_len+1);
 				if (buf == NULL) {
