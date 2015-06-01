@@ -397,7 +397,7 @@ static int __pims_ipc_read_data(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 static int __pims_ipc_receive(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 {
 	int ret = -1;
-	struct pollfd *pollfds = (struct pollfd*)calloc(1, sizeof(struct pollfd));
+	struct pollfd *pollfds = (struct pollfd*)calloc(1, sizeof (struct pollfd));
 	if (NULL == pollfds) {
 		ERROR("calloc() Fail");
 		return -1;
@@ -529,6 +529,7 @@ static int __subscribe_data(pims_ipc_s * handle)
 			pims_ipc_subscribe_data_s *sub_data = (pims_ipc_subscribe_data_s *)calloc(1, sizeof(pims_ipc_subscribe_data_s));
 			if (NULL == sub_data) {
 				ERROR("calloc() Fail");
+				ret = -1;
 				break;
 			}
 			sub_data->handle = dhandle;
