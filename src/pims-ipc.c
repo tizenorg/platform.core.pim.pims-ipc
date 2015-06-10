@@ -516,7 +516,10 @@ static int __subscribe_data(pims_ipc_s * handle)
 			else
 				break;
 			ret = socket_recv(handle->fd, (void *)&(buf), data_len);
-			if (ret < 0) {  ERROR("socket_recv error"); break; }
+			if (ret < 0) {
+				ERROR("socket_recv error");
+				break;
+			}
 			read_len += ret;
 
 			dhandle = pims_ipc_data_steal_unmarshal(buf, data_len);
@@ -529,6 +532,7 @@ static int __subscribe_data(pims_ipc_s * handle)
 			pims_ipc_subscribe_data_s *sub_data = (pims_ipc_subscribe_data_s *)calloc(1, sizeof(pims_ipc_subscribe_data_s));
 			if (NULL == sub_data) {
 				ERROR("calloc() Fail");
+				pims_ipc_data_destroy(dhandle);
 				ret = -1;
 				break;
 			}
