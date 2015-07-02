@@ -661,7 +661,6 @@ static void* __worker_loop(void *data)
 				if (__worker_raw_data_pop(worker_data, &raw_data)) {
 					pims_ipc_data_h data_in = NULL;
 					pims_ipc_data_h data_out = NULL;
-
 					if (strcmp(PIMS_IPC_CALL_ID_CREATE, raw_data->call_id) == 0) {
 
 					}
@@ -670,10 +669,6 @@ static void* __worker_loop(void *data)
 					}
 					else {
 						data_in = pims_ipc_data_steal_unmarshal(raw_data->data, raw_data->data_len);
-						if (NULL == data_in) {
-							ERROR("pims_ipc_data_steal_unmarshal() Fail");
-							break;
-						}
 						raw_data->data = NULL;
 						raw_data->data_len = 0;
 						raw_data->is_data = false;
@@ -1560,9 +1555,9 @@ static void* __publish_loop(void *user_data)
 	WARN_IF(ret != 0, "listen error :%d", ret);
 
 	ret = chown(ipc_svc->service, getuid(), ipc_svc->group);
-	WARN_IF(ret != 0, "listen error :%d", ret);
+	WARN_IF(ret != 0, "chown error :%d", ret);
 	ret = chmod(ipc_svc->service, ipc_svc->mode);
-	WARN_IF(ret != 0, "listen error :%d", ret);
+	WARN_IF(ret != 0, "chmod error :%d", ret);
 
 	epfd = epoll_create(MAX_EPOLL_EVENT);
 
