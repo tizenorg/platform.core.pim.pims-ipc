@@ -122,8 +122,10 @@ static void __pims_ipc_free_handle(pims_ipc_s *handle)
 	if (handle->fd != -1)
 		close(handle->fd);
 
+	pthread_mutex_unlock(&__gmutex);
 	if (handle->io_thread)
 		pthread_join(handle->io_thread, NULL);
+	pthread_mutex_lock(&__gmutex);
 
 	g_free(handle->id);
 	g_free(handle->service);
@@ -571,19 +573,37 @@ static void* __io_thread(void *data)
 
 	epfd = epoll_create(MAX_EPOLL_EVENT);
 
+	pthread_mutex_lock(&__gmutex);
+
 	ev.events = EPOLLIN | EPOLLHUP;
 	ev.data.fd = handle->fd;
 
 	ret = epoll_ctl(epfd, EPOLL_CTL_ADD, handle->fd, &ev);
 	WARN_IF(ret != 0, "listen error :%d", ret);
+	pthread_mutex_unlock(&__gmutex);
 
-	while (!handle->epoll_stop_thread) {
+
+	while (1) {
 		int i = 0;
+
+		pthread_mutex_lock(&__gmutex);
+
+		if (handle->epoll_stop_thread) {
+			pthread_mutex_unlock(&__gmutex);
+			break;
+		}
+		pthread_mutex_unlock(&__gmutex);
+
 		struct epoll_event events[MAX_EPOLL_EVENT] = {{0}, };
 		int event_num = epoll_wait(epfd, events, MAX_EPOLL_EVENT, 50);
 
-		if (handle->epoll_stop_thread)
+		pthread_mutex_lock(&__gmutex);
+
+		if (handle->epoll_stop_thread) {
+			pthread_mutex_unlock(&__gmutex);
 			break;
+		}
+		pthread_mutex_unlock(&__gmutex);
 
 		if (event_num == -1) {
 			if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -592,6 +612,7 @@ static void* __io_thread(void *data)
 			}
 		}
 
+		pthread_mutex_lock(&__gmutex);
 		for (i = 0; i < event_num; i++) {
 			if (events[i].events & EPOLLHUP) {
 				ERROR("server fd closed");
@@ -604,10 +625,12 @@ static void* __io_thread(void *data)
 				if(__subscribe_data(handle) < 0) {
 					ERROR("server fd closed");
 					g_idle_add(__hung_up_cb, NULL);
+					handle->epoll_stop_thread = true;
 					break;
 				}
 			}
 		}
+		pthread_mutex_unlock(&__gmutex);
 	}
 
 	close(epfd);
