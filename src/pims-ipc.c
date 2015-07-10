@@ -96,13 +96,17 @@ typedef struct
 
 static unsigned int ref_cnt;
 static GList *subscribe_handles;
+static GList *disconnected_list;
 
 typedef struct {
 	pims_ipc_server_disconnected_cb callback;
 	void *user_data;
+	pims_ipc_s *handle;
 } pims_ipc_server_disconnected_cb_t;
 
+/* start deprecated */
 static pims_ipc_server_disconnected_cb_t _server_disconnected_cb = {NULL, NULL};
+/* end deprecated */
 static pthread_mutex_t __disconnect_cb_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void __sub_data_free(gpointer user_data)
@@ -557,10 +561,24 @@ static int __subscribe_data(pims_ipc_s * handle)
 
 static gboolean __hung_up_cb(gpointer data)
 {
+	GList *cursor = NULL;
+
+	if (NULL == disconnected_list) {
+		DEBUG("No disconnected list");
+		return FALSE;
+	}
+
 	pthread_mutex_lock(&__disconnect_cb_mutex);
-	if (_server_disconnected_cb.callback)
-		_server_disconnected_cb.callback(_server_disconnected_cb.user_data);
+	cursor = g_list_first(disconnected_list);
+	while (cursor) {
+		pims_ipc_server_disconnected_cb_t *disconnected = cursor->data;
+		if (disconnected && disconnected->handle == data && disconnected->callback)
+			disconnected->callback(disconnected->user_data);
+
+		cursor = g_list_next(cursor);
+	}
 	pthread_mutex_unlock(&__disconnect_cb_mutex);
+
 	return FALSE;
 }
 
@@ -616,7 +634,7 @@ static void* __io_thread(void *data)
 		for (i = 0; i < event_num; i++) {
 			if (events[i].events & EPOLLHUP) {
 				ERROR("server fd closed");
-				g_idle_add(__hung_up_cb, NULL);
+				g_idle_add(__hung_up_cb, handle);
 				handle->epoll_stop_thread = true;
 				break;
 			}
@@ -624,7 +642,7 @@ static void* __io_thread(void *data)
 			if (events[i].events & EPOLLIN) {
 				if(__subscribe_data(handle) < 0) {
 					ERROR("server fd closed");
-					g_idle_add(__hung_up_cb, NULL);
+					g_idle_add(__hung_up_cb, handle);
 					handle->epoll_stop_thread = true;
 					break;
 				}
@@ -1079,6 +1097,65 @@ API int pims_ipc_unsubscribe(pims_ipc_h ipc, char *module, char *event)
 	return 0;
 }
 
+API int pims_ipc_add_server_disconnected_cb(pims_ipc_h handle, pims_ipc_server_disconnected_cb callback, void *user_data)
+{
+	GList *cursor = NULL;
+
+	/* check already existed */
+	pthread_mutex_lock(&__disconnect_cb_mutex);
+	cursor = g_list_first(disconnected_list);
+	while (cursor) {
+		pims_ipc_server_disconnected_cb_t *disconnected = cursor->data;
+		if (disconnected && disconnected->handle == handle) {
+			ERROR("Already set callback");
+			pthread_mutex_unlock(&__disconnect_cb_mutex);
+			return -1;
+		}
+		cursor = g_list_next(cursor);
+	}
+	pthread_mutex_unlock(&__disconnect_cb_mutex);
+
+	/* append callback */
+	pims_ipc_server_disconnected_cb_t *disconnected = NULL;
+	disconnected = calloc(1, sizeof(pims_ipc_server_disconnected_cb_t));
+	if (NULL == disconnected) {
+		ERROR("Calloc() Fail");
+		return -1;
+	}
+	DEBUG("add disconnected");
+	disconnected->handle = handle;
+	disconnected->callback = callback;
+	disconnected->user_data = user_data;
+
+	pthread_mutex_lock(&__disconnect_cb_mutex);
+	disconnected_list = g_list_append(disconnected_list, disconnected);
+	pthread_mutex_unlock(&__disconnect_cb_mutex);
+
+	return 0;
+}
+
+API int pims_ipc_remove_server_disconnected_cb(pims_ipc_h handle)
+{
+	pthread_mutex_lock(&__disconnect_cb_mutex);
+
+	GList *cursor = NULL;
+	cursor = g_list_first(disconnected_list);
+	while (cursor) {
+		pims_ipc_server_disconnected_cb_t *disconnected = cursor->data;
+		if (disconnected && disconnected->handle == handle) {
+			free(disconnected);
+			disconnected_list = g_list_delete_link(disconnected_list, cursor);
+			DEBUG("remove disconnected_cb");
+			break;
+		}
+		cursor = g_list_next(cursor);
+	}
+	pthread_mutex_unlock(&__disconnect_cb_mutex);
+
+	return 0;
+}
+
+/* start deprecated */
 API int pims_ipc_unset_server_disconnected_cb()
 {
 	pthread_mutex_lock(&__disconnect_cb_mutex);
@@ -1096,3 +1173,4 @@ API int pims_ipc_set_server_disconnected_cb(pims_ipc_server_disconnected_cb call
 	pthread_mutex_unlock(&__disconnect_cb_mutex);
 	return 0;
 }
+/* end deprecated */
