@@ -572,9 +572,11 @@ static gboolean __hung_up_cb(gpointer data)
 	cursor = g_list_first(disconnected_list);
 	while (cursor) {
 		pims_ipc_server_disconnected_cb_t *disconnected = cursor->data;
-		if (disconnected && disconnected->handle == data && disconnected->callback)
+		if (disconnected && disconnected->handle == data && disconnected->callback) {
+			DEBUG("call hung_up callback");
 			disconnected->callback(disconnected->user_data);
-
+			break;
+		}
 		cursor = g_list_next(cursor);
 	}
 	pthread_mutex_unlock(&__disconnect_cb_mutex);
