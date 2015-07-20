@@ -947,6 +947,11 @@ static int __process_router_event(pims_ipc_svc_s *ipc_svc, gboolean for_queue)
 			}
 
 			pims_ipc_raw_data_s *data = (pims_ipc_raw_data_s*)(cursor->data);
+			if (NULL == data) {
+				ERROR("data is NULL");
+				pthread_mutex_unlock(&data_queue->raw_data_mutex);
+				break;
+			}
 			char *call_id = data->call_id;
 			int client_fd = data_queue->client_fd;
 
@@ -1107,6 +1112,10 @@ static void __request_push(pims_ipc_svc_s *ipc_svc, char *client_id, int client_
 	int ret;
 	int *org_fd;
 	pims_ipc_request_s *data_queue = NULL;
+	if (NULL == data) {
+		ERROR("data is NULL");
+		return;
+	}
 
 	pthread_mutex_lock(&ipc_svc->request_data_queue_mutex);
 	ret = g_hash_table_lookup_extended(ipc_svc->request_data_queue, (void*)client_id, (gpointer*)&org_fd,(gpointer*)&data_queue);
@@ -1332,6 +1341,10 @@ static gboolean __request_handler(GIOChannel *src, GIOCondition condition, gpoin
 	int event_fd = g_io_channel_unix_get_fd(src);
 	char *client_id = NULL;
 	pims_ipc_svc_s *ipc_svc = (pims_ipc_svc_s*)data;
+	if (NULL == ipc_svc) {
+		ERROR("ipc_svc is NULL");
+		return FALSE;
+	}
 
 	if (G_IO_HUP & condition) {
 		INFO("client closed ------------------------client_fd : %d", event_fd);
