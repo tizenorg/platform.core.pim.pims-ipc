@@ -1268,7 +1268,10 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 			break;
 		}
 		ret = socket_recv(fd, (void *)&(temp->client_id), temp->client_id_len);
-		if (ret < 0) {	 ERROR("socket_recv error"); break;		}
+		if (ret < 0) {
+			ERROR("socket_recv error(%d)", ret);
+			break;
+		}
 		read_len += ret;
 
 		// sequnce no
@@ -1294,7 +1297,10 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 			break;
 		}
 		ret = socket_recv(fd, (void *)&(temp->call_id), temp->call_id_len);
-		if (ret < 0) {	 ERROR("socket_recv error"); break;		}
+		if (ret < 0) {
+			ERROR("socket_recv error(%d)", ret);
+			break;
+		}
 		read_len += ret;
 
 		// is_data
@@ -1316,7 +1322,10 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 				break;
 			}
 			ret = socket_recv(fd, (void *)&(temp->data), temp->data_len);
-			if (ret < 0) {	ERROR("socket_recv error"); break;		}
+			if (ret < 0) {
+				ERROR("socket_recv error(%d)", ret);
+				break;
+			}
 			read_len += ret;
 		}
 
@@ -1327,9 +1336,11 @@ static int __recv_raw_data(int fd, pims_ipc_raw_data_s **data, bool *identity)
 	} while(0);
 
 	if (ret < 0) {
+		ERROR("total_len(%d) client_id_len(%d)", total_len, temp->client_id_len);
 		__free_raw_data(temp);
 		*data = NULL;
 		*identity = false;
+		return -1;
 	}
 
 	return read_len;
