@@ -715,15 +715,27 @@ static void* __worker_loop(void *data)
 
 static void __launch_thread(void *(*start_routine) (void *), void *data)
 {
+	int ret = 0;
+
 	pthread_t worker;
 	pthread_attr_t attr;
 
 	// set kernel thread
-	pthread_attr_init(&attr);
-	pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM);
-
-	pthread_create(&worker, &attr, start_routine, data);
-	// detach this thread
+	ret = pthread_attr_init(&attr);
+	if (0 != ret) {
+		ERROR("pthread_attr_init() Fail(%d)", ret);
+		return;
+	}
+	ret = pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM);
+	if (0 != ret) {
+		ERROR("pthread_attr_setscope() Fail(%d)", ret);
+		return;
+	}
+	ret = pthread_create(&worker, &attr, start_routine, data);
+	if (0 != ret) {
+		ERROR("pthread_create() Fail(%d)", ret);
+		return;
+	}
 	pthread_detach(worker);
 }
 
