@@ -636,7 +636,6 @@ static void* __io_thread(void *data)
 		for (i = 0; i < event_num; i++) {
 			if (events[i].events & EPOLLHUP) {
 				ERROR("server fd closed");
-				g_idle_add(__hung_up_cb, handle);
 				handle->epoll_stop_thread = true;
 				break;
 			}
@@ -656,6 +655,24 @@ static void* __io_thread(void *data)
 	close(epfd);
 
 	pthread_exit(NULL);
+}
+
+static gboolean _g_io_hup_cb(GIOChannel *src, GIOCondition condition, gpointer data)
+{
+	int ret = 0;
+	char buf[1024] = {0};
+
+	pims_ipc_s *handle = (pims_ipc_s *)data;
+	ret = recv(handle->fd, buf, sizeof(buf), MSG_PEEK);
+
+	if (0 ==  ret && condition & G_IO_IN) {
+		DEBUG("hung up");
+		__hung_up_cb(data);
+	}
+	if (condition & G_IO_ERR) {
+		DEBUG("G_IO_ERR");
+	}
+	return FALSE;
 }
 
 static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
@@ -711,6 +728,9 @@ static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
 		VERBOSE("connect to server : socket:%s, client_sock:%d, %d\n", handle->service, handle->fd, ret);
 
 		if (mode == PIMS_IPC_MODE_REQ) {
+			GIOChannel *ch = g_io_channel_unix_new(handle->fd);
+			g_io_add_watch(ch, G_IO_IN|G_IO_HUP, _g_io_hup_cb, handle);
+
 			handle->call_sequence_no = (unsigned int)time(NULL);
 			ret = __pims_ipc_send_identify(handle);
 			if (ret < 0) {
