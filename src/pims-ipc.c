@@ -77,6 +77,7 @@ typedef struct
 	char *service;
 	char *id;
 	GIOChannel *async_channel;
+	guint disconnected_source;
 	guint async_source_id;
 	pthread_mutex_t call_status_mutex;
 	pims_ipc_call_status_e call_status;
@@ -156,6 +157,7 @@ static void __pims_ipc_free_handle(pims_ipc_s *handle)
 	if (handle->subscribe_fd != -1)
 		close(handle->subscribe_fd);
 
+	g_source_remove(handle->disconnected_source);
 	pthread_mutex_destroy(&handle->call_status_mutex);
 
 	g_free(handle);
@@ -729,7 +731,7 @@ static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
 
 		if (mode == PIMS_IPC_MODE_REQ) {
 			GIOChannel *ch = g_io_channel_unix_new(handle->fd);
-			g_io_add_watch(ch, G_IO_IN|G_IO_HUP, _g_io_hup_cb, handle);
+			handle->disconnected_source = g_io_add_watch(ch, G_IO_IN|G_IO_HUP, _g_io_hup_cb, handle);
 
 			handle->call_sequence_no = (unsigned int)time(NULL);
 			ret = __pims_ipc_send_identify(handle);
