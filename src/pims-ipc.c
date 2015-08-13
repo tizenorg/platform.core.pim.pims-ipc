@@ -661,20 +661,23 @@ static void* __io_thread(void *data)
 
 static gboolean _g_io_hup_cb(GIOChannel *src, GIOCondition condition, gpointer data)
 {
-	int ret = 0;
-	char buf[1024] = {0};
+	DEBUG("_g_io_hup_cb");
 
-	pims_ipc_s *handle = (pims_ipc_s *)data;
-	ret = recv(handle->fd, buf, sizeof(buf), MSG_PEEK);
-
-	if (0 ==  ret && condition & G_IO_IN) {
+	if (G_IO_HUP & condition) {
 		DEBUG("hung up");
 		__hung_up_cb(data);
+		return FALSE;
+	} else if (G_IO_IN & condition) {
+		char buf[1] = {0};
+		if (0 == recv(((pims_ipc_s *)data)->fd, buf, sizeof(buf), MSG_PEEK)) {
+			DEBUG("hung up");
+			__hung_up_cb(data);
+			return FALSE;
+		}
+	} else {
+		ERROR("Invalid condition (%d)", condition);
 	}
-	if (condition & G_IO_ERR) {
-		DEBUG("G_IO_ERR");
-	}
-	return FALSE;
+	return TRUE;
 }
 
 static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
