@@ -44,12 +44,18 @@ int socket_send(int fd, char *buf, int len)
 	while (length > 0) {
 		passed_len = send(fd, (const void *)buf, length, MSG_NOSIGNAL);
 		if (passed_len == -1) {
-			if (errno == EINTR)
+			if (errno == EINTR){
+				ERROR("EINTR error. send retry");
 				continue;
-			else if (errno == EAGAIN)
+			}
+			else if (errno == EAGAIN) {
+				ERROR("EAGAIN error. send retry");
 				continue;
-			else if (errno == EWOULDBLOCK)
+			}
+			else if (errno == EWOULDBLOCK) {
+				ERROR("EWOULDBLOCK error. send retry");
 				continue;
+			}
 			ERROR("send error [%d]", errno);
 			break;
 		} else if (passed_len == 0)
