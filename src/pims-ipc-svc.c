@@ -435,6 +435,7 @@ API int pims_ipc_svc_publish(char *module, char *event, pims_ipc_data_h data)
 					ERROR("socket_send_data publish error : %d", ret);
 				}
 			}
+			pthread_mutex_lock(&ipc_svc->subscribe_fds_mutex);
 			cursor = g_list_next(cursor);
 		}
 		pthread_mutex_unlock(&ipc_svc->subscribe_fds_mutex);
