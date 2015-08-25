@@ -661,8 +661,6 @@ static void* __io_thread(void *data)
 
 static gboolean _g_io_hup_cb(GIOChannel *src, GIOCondition condition, gpointer data)
 {
-	DEBUG("_g_io_hup_cb");
-
 	if (G_IO_HUP & condition) {
 		DEBUG("hung up");
 		__hung_up_cb(data);
