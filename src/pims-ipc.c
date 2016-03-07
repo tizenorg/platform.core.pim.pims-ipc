@@ -456,7 +456,8 @@ static int __open_subscribe_fd(pims_ipc_s *handle)
 	if (flags == -1)
 		flags = 0;
 	ret = fcntl (subscribe_fd, F_SETFL, flags | O_NONBLOCK);
-	VERBOSE("subscribe fcntl : %d\n", ret);
+	if (0 != ret)
+		VERBOSE("subscribe fcntl : %d\n", ret);
 
 	handle->subscribe_fd = subscribe_fd;
 	return 0;

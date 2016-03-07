@@ -1535,7 +1535,8 @@ static int __open_router_fd(pims_ipc_svc_s *ipc_svc)
 	if (flags == -1)
 		flags = 0;
 	ret = fcntl (router, F_SETFL, flags | O_NONBLOCK);
-	VERBOSE("rounter fcntl : %d\n", ret);
+	if (0 != ret)
+		VERBOSE("rounter fcntl : %d\n", ret);
 
 	// manager inproc eventfd
 	manager = eventfd(0,0);
@@ -1550,7 +1551,8 @@ static int __open_router_fd(pims_ipc_svc_s *ipc_svc)
 	if (flags == -1)
 		flags = 0;
 	ret = fcntl (manager, F_SETFL, flags | O_NONBLOCK);
-	VERBOSE("manager fcntl : %d\n", ret);
+	if (0 != ret)
+		VERBOSE("manager fcntl : %d\n", ret);
 
 	ipc_svc->router = router;
 	ipc_svc->manager = manager;
