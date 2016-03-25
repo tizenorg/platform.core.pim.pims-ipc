@@ -1374,10 +1374,9 @@ static gboolean __request_handler(GIOChannel *src, GIOCondition condition, gpoin
 	if (G_IO_HUP & condition) {
 		INFO("client closed ------------------------client_fd : %d", event_fd);
 
-		close(event_fd);
-
 		// Find client_id
 		__find_client_id(ipc_svc, event_fd, true, &client_id);
+		close(event_fd);
 
 		// Send client_id to manager to terminate worker thread
 		if (client_id) {
