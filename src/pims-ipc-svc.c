@@ -63,6 +63,9 @@ typedef struct {
 	bool epoll_stop_thread;
 
 	/////////////////////////////////////////////
+	int worker;
+
+	/////////////////////////////////////////////
 	// router inproc eventfd
 	int router;
 	int delay_count;  // not need mutex
@@ -591,25 +594,24 @@ static gboolean __worker_raw_data_pop(pims_ipc_worker_data_s *worker, pims_ipc_r
 	return TRUE;
 }
 
-static void* __worker_loop(void *data)
+static int __process_worker_event(pims_ipc_svc_s *ipc_svc, gboolean for_queue)
 {
 	int ret;
 	int worker_id;
 	int worker_fd;
-	pims_ipc_svc_s *ipc_svc = (pims_ipc_svc_s*)data;
 	pims_ipc_worker_data_s *worker_data;
 	bool disconnected = false;
 
 	worker_fd = eventfd(0, 0);
 	if (worker_fd == -1)
-		return NULL;
+		return -1;
 	worker_id = (int)pthread_self();
 
 	worker_data = calloc(1, sizeof(pims_ipc_worker_data_s));
 	if (NULL == worker_data) {
 		ERROR("calloc() Fail");
 		close(worker_fd);
-		return NULL;
+		return -1;
 	}
 	worker_data->fd = worker_fd;
 	worker_data->worker_id = worker_id;
@@ -634,7 +636,7 @@ static void* __worker_loop(void *data)
 		g_hash_table_remove(ipc_svc->task_fds, GINT_TO_POINTER(worker_fd));
 		free(worker_data);
 		close(worker_fd);
-		return NULL;
+		return -1;
 	}
 	pollfds[0].fd = worker_fd;
 	pollfds[0].events = POLLIN;
@@ -712,8 +714,51 @@ static void* __worker_loop(void *data)
 	if (_client_disconnected_cb.callback)
 		_client_disconnected_cb.callback((pims_ipc_h)worker_id, _client_disconnected_cb.user_data);
 
+	return 0;
+}
+
+static void* __worker_loop(void *data)
+{
+	pims_ipc_svc_s *ipc_svc = (pims_ipc_svc_s*)data;
+	int fd_count = 1;
+	struct pollfd *pollfds;
+
+	pollfds = (struct pollfd*)calloc(fd_count, sizeof(struct pollfd));
+	if (NULL == pollfds) {
+		ERROR("calloc() Fail");
+		return NULL;
+	}
+	pollfds[0].fd = ipc_svc->worker;
+	pollfds[0].events = POLLIN;
+
+	while (1) {
+		int ret = -1;
+		uint64_t dummy;
+		int check_router_queue = -1;
+
+		while (1) {
+			ret = poll(pollfds, fd_count, 1000);
+			if (ret == -1 && errno == EINTR) {
+				//free (pollfds);
+				continue;		//return NULL;
+			}
+			break;
+		}
+
+		if (pollfds[0].revents & POLLIN) {
+			DEBUG("request router: send request to worker");
+			if (sizeof (dummy) == read_command(pollfds[0].fd, &dummy)) {
+				DEBUG("worker_event");
+				check_router_queue = __process_worker_event(ipc_svc, false);
+			}
+		}
+	}
+
+	free(pollfds);
+
 	return NULL;
 }
+
 
 static void __launch_thread(void *(*start_routine) (void *), void *data)
 {
@@ -974,7 +1019,8 @@ static int __process_router_event(pims_ipc_svc_s *ipc_svc, gboolean for_queue)
 			VERBOSE("call_id = [%s]", call_id);
 			if (strcmp(PIMS_IPC_CALL_ID_CREATE, call_id) == 0) {
 				// Get a worker. If cannot get a worker, create a worker and enqueue a current request
-				__launch_thread(__worker_loop, ipc_svc);
+				write_command(ipc_svc->worker, true);
+//				__launch_thread(__worker_loop, ipc_svc);
 				if (__get_worker((const char*)client_id, &worker_fd) != 0) {
 					ipc_svc->delay_count++;
 					pthread_mutex_unlock(&data_queue->raw_data_mutex);
@@ -998,7 +1044,7 @@ static int __process_router_event(pims_ipc_svc_s *ipc_svc, gboolean for_queue)
 			}
 			pthread_mutex_unlock(&data_queue->raw_data_mutex);
 
-			VERBOSE("routing client_id : %s, seq_no: %d, client_fd = %d, worker fd = %d", client_id, data->seq_no, client_fd, worker_fd);
+			DEBUG("routing client_id : %s, seq_no: %d, client_fd = %d, worker fd = %d", client_id, data->seq_no, client_fd, worker_fd);
 
 			if (worker_fd <= 0)
 				break;
@@ -1038,9 +1084,10 @@ static int __process_manager_event(pims_ipc_svc_s *ipc_svc)
 	GList *cursor = NULL;
 	int worker_fd;
 
-	// client socket terminated without disconnect request
+	DEBUG("client socket terminated without disconnect request");
 	pthread_mutex_lock(&ipc_svc->manager_queue_from_epoll_mutex);
 	if (ipc_svc->manager_queue_from_epoll) {
+		DEBUG("manager_queue_from_epoll");
 		cursor = g_list_first(ipc_svc->manager_queue_from_epoll);
 		char *client_id = (char*)cursor->data;
 		__find_worker(client_id, &worker_fd);
@@ -1048,12 +1095,12 @@ static int __process_manager_event(pims_ipc_svc_s *ipc_svc)
 		ipc_svc->manager_queue_from_epoll = g_list_delete_link(ipc_svc->manager_queue_from_epoll, cursor);
 		pthread_mutex_unlock(&ipc_svc->manager_queue_from_epoll_mutex);
 
-		// remove client_fd
+		DEBUG("remove client_fd");
 		g_hash_table_remove(ipc_svc->client_worker_map, client_id);
 		free(client_id);
 
-		// stop worker thread
 		if (worker_fd) {
+			DEBUG("stop worker thread");
 			int *org_fd;
 			pims_ipc_worker_data_s *worker_data;
 
@@ -1062,8 +1109,10 @@ static int __process_manager_event(pims_ipc_svc_s *ipc_svc)
 						GINT_TO_POINTER(worker_fd), (gpointer*)&org_fd, (gpointer*)&worker_data)) {
 				ERROR("g_hash_table_lookup_extended fail : worker_fd (%d)", worker_fd);
 				pthread_mutex_unlock(&ipc_svc->task_fds_mutex);
+				LEAVE();
 				return -1;
 			}
+			DEBUG("stop thread");
 			worker_data->stop_thread = true;
 			worker_data->client_fd = -1;
 			pthread_mutex_unlock(&ipc_svc->task_fds_mutex);
@@ -1071,6 +1120,7 @@ static int __process_manager_event(pims_ipc_svc_s *ipc_svc)
 			write_command(worker_fd, 1);
 			VERBOSE("write command to worker terminate (worker_fd : %d)", worker_fd);
 		}
+		LEAVE();
 		return 0;
 	}
 	pthread_mutex_unlock(&ipc_svc->manager_queue_from_epoll_mutex);
@@ -1078,9 +1128,11 @@ static int __process_manager_event(pims_ipc_svc_s *ipc_svc)
 	// create new worker
 	pthread_mutex_lock(&ipc_svc->manager_queue_from_worker_mutex);
 	if (ipc_svc->manager_queue_from_worker) {
+		DEBUG("has manager_queue_from_worker");
 
 		cursor = g_list_first(ipc_svc->manager_queue_from_worker);
 		while (cursor) {
+			DEBUG("manager_queue");
 			worker_fd = (int)cursor->data;
 			ipc_svc->manager_queue_from_worker = g_list_delete_link(ipc_svc->manager_queue_from_worker, cursor);
 
@@ -1095,6 +1147,7 @@ static int __process_manager_event(pims_ipc_svc_s *ipc_svc)
 	}
 	pthread_mutex_unlock(&ipc_svc->manager_queue_from_worker_mutex);
 
+	LEAVE();
 	return 0;
 }
 
@@ -1402,59 +1455,60 @@ static gboolean __request_handler(GIOChannel *src, GIOCondition condition, gpoin
 	pims_ipc_raw_data_s *req = NULL;
 
 	recv_len = __recv_raw_data(event_fd, &req, &identity);
-	if (recv_len > 0) {
-		// send command to router
-		if (identity) {
-			pims_ipc_client_map_s *client = (pims_ipc_client_map_s*)calloc(1, sizeof(pims_ipc_client_map_s));
-			if (NULL == client) {
-				ERROR("calloc() Fail");
-				close(event_fd);
-				return FALSE;
-			}
+	if (recv_len <= 0) {
+		ERROR("receive invalid : %d", event_fd);
+		close(event_fd);
+		return FALSE;
+	}
 
-			client->fd = event_fd;
-
-			char temp[100];
-			snprintf(temp, sizeof(temp), "%d_%s", ipc_svc->unique_sequence_number++, req->client_id);
-			client->id = strdup(temp);
-			free(req->client_id);
-			req->client_id = NULL;
-			ipc_svc->client_id_fd_map = g_list_append(ipc_svc->client_id_fd_map, client);
-
-			// send server pid to client
-			snprintf(temp, sizeof(temp), "%x", getpid());
-			ret = __send_identify(event_fd, req->seq_no, temp, strlen(temp));
-
-			__free_raw_data(req);
-			if (ret < 0) {
-				ERROR("__send_identify() Fail(%d)", ret);
-				close(event_fd);
-				return FALSE;
-			}
-
-			pims_ipc_client_info_s *client_info = NULL;
-			if (0 != _create_client_info(event_fd, &client_info))
-				ERROR("_create_client_info() Fail");
-			pthread_mutex_lock(&ipc_svc->client_info_mutex);
-			g_hash_table_insert(ipc_svc->client_info_map, g_strdup(client->id), client_info);
-			pthread_mutex_unlock(&ipc_svc->client_info_mutex);
-
-			return TRUE;
+	// send command to router
+	if (identity) { // create
+		pims_ipc_client_map_s *client = (pims_ipc_client_map_s*)calloc(1, sizeof(pims_ipc_client_map_s));
+		if (NULL == client) {
+			ERROR("calloc() Fail");
+			close(event_fd);
+			return FALSE;
 		}
 
+		client->fd = event_fd;
+
+		char temp[100];
+		snprintf(temp, sizeof(temp), "%d_%s", ipc_svc->unique_sequence_number++, req->client_id);
+		client->id = strdup(temp);
+		free(req->client_id);
+		req->client_id = NULL;
+		ipc_svc->client_id_fd_map = g_list_append(ipc_svc->client_id_fd_map, client);
+
+		// send server pid to client
+		snprintf(temp, sizeof(temp), "%x", getpid());
+		ret = __send_identify(event_fd, req->seq_no, temp, strlen(temp));
+
+		__free_raw_data(req);
+		if (ret < 0) {
+			ERROR("__send_identify() Fail(%d)", ret);
+			close(event_fd);
+			return FALSE;
+		}
+
+		pims_ipc_client_info_s *client_info = NULL;
+		if (0 != _create_client_info(event_fd, &client_info))
+			ERROR("_create_client_info() Fail");
+		pthread_mutex_lock(&ipc_svc->client_info_mutex);
+		g_hash_table_insert(ipc_svc->client_info_map, g_strdup(client->id), client_info);
+		pthread_mutex_unlock(&ipc_svc->client_info_mutex);
+
+		return TRUE;
+	}
+	else { // not create
 		__find_client_id(ipc_svc, event_fd, false, &client_id);
 
 		if (client_id) {
 			__request_push(ipc_svc, client_id, event_fd, req);
 			write_command(ipc_svc->router, 1);
 		}
-		else
+		else {
 			ERROR("__find_client_id fail : event_fd (%d)", event_fd);
-	}
-	else {
-		ERROR("receive invalid : %d", event_fd);
-		close(event_fd);
-		return FALSE;
+		}
 	}
 
 	return TRUE;
@@ -1524,6 +1578,7 @@ static int __open_router_fd(pims_ipc_svc_s *ipc_svc)
 	int flags;
 	int router;
 	int manager;
+	int worker;
 
 	// router inproc eventfd
 	router = eventfd(0,0);
@@ -1556,8 +1611,25 @@ static int __open_router_fd(pims_ipc_svc_s *ipc_svc)
 	if (0 != ret)
 		VERBOSE("manager fcntl : %d\n", ret);
 
+	// worker inproc eventfd
+	worker = eventfd(0,0);
+	if (-1 == worker) {
+		ERROR("eventfd error : %d", errno);
+		close(router);
+		return -1;
+	}
+	VERBOSE("worker :%d\n", worker);
+
+	flags = fcntl(worker, F_GETFL, 0);
+	if (flags == -1)
+		flags = 0;
+	ret = fcntl (worker, F_SETFL, flags | O_NONBLOCK);
+	if (0 != ret)
+		VERBOSE("workerfd fcntl : %d\n", ret);
+
 	ipc_svc->router = router;
 	ipc_svc->manager = manager;
+	ipc_svc->worker = worker;
 
 	return 0;
 }
@@ -1566,6 +1638,7 @@ static void __close_router_fd(pims_ipc_svc_s *ipc_svc)
 {
 	close(ipc_svc->router);
 	close(ipc_svc->manager);
+	close(ipc_svc->worker);
 }
 
 static void* __publish_loop(void *user_data)
@@ -1719,6 +1792,7 @@ static void* __router_loop(void *data)
 			if (pollfds[0].revents & POLLIN) {
 				// request router: send request to worker
 				if (sizeof (dummy) == read_command(pollfds[0].fd, &dummy)) {
+					DEBUG("router");
 					check_router_queue = __process_router_event(ipc_svc, false);
 				}
 			}
@@ -1726,9 +1800,12 @@ static void* __router_loop(void *data)
 			if (pollfds[1].revents & POLLIN) {
 				// worker manager
 				if (sizeof (dummy) == read_command(pollfds[1].fd, &dummy)) {
+					DEBUG("manager");
 					check_manager_queue = __process_manager_event(ipc_svc);
-					if (ipc_svc->delay_count > 0)
+					if (ipc_svc->delay_count > 0) {
+						DEBUG("router");
 						check_router_queue = __process_router_event(ipc_svc, true);
+					}
 				}
 			}
 		}
@@ -1736,12 +1813,16 @@ static void* __router_loop(void *data)
 		// check queue
 		while(check_router_queue > 0 || check_manager_queue > 0) {
 			read_command(pollfds[0].fd, &dummy);
+			DEBUG("router");
 			check_router_queue = __process_router_event(ipc_svc, false);
 
 			read_command(pollfds[1].fd, &dummy);
+			DEBUG("manager");
 			check_manager_queue = __process_manager_event(ipc_svc);
-			if (ipc_svc->delay_count > 0)
+			if (ipc_svc->delay_count > 0) {
+				DEBUG("router");
 				check_router_queue = __process_router_event(ipc_svc, true);
+			}
 		}
 	}
 
@@ -1768,8 +1849,8 @@ API void pims_ipc_svc_run_main_loop(GMainLoop* loop)
 
 		int i;
 		// launch worker threads in advance
-		for (i = 0; i < _g_singleton->workers_max_count; i++)
-			__launch_thread(__worker_loop, _g_singleton);
+//		for (i = 0; i < _g_singleton->workers_max_count; i++)
+		__launch_thread(__worker_loop, _g_singleton);
 
 		__launch_thread(__router_loop, _g_singleton);
 		__main_loop(_g_singleton);
