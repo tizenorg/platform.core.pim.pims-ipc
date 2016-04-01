@@ -1471,9 +1471,11 @@ static gboolean __socket_handler(GIOChannel *src, GIOCondition condition, gpoint
 
 	client_sockfd = accept(sockfd, (struct sockaddr *)&clientaddr, &client_len);
 	if (-1 == client_sockfd) {
-		char errmsg[1024] = {0};
-		strerror_r(errno, errmsg, sizeof(errmsg));
-		ERROR("accept error : %s", errmsg);
+		char *errmsg = NULL;
+		char buf[1024] = {0};
+		errmsg = strerror_r(errno, buf, sizeof(buf));
+		if (errmsg)
+			ERROR("accept error : %s", errmsg);
 		return TRUE;
 	}
 
