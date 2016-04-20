@@ -1,7 +1,7 @@
 /*
  * PIMS IPC
  *
- * Copyright (c) 2012 - 2015 Samsung Electronics Co., Ltd. All rights reserved.
+ * Copyright (c) 2012 - 2016 Samsung Electronics Co., Ltd. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the License);
  * you may not use this file except in compliance with the License.
@@ -24,19 +24,18 @@
 #include <glib.h>
 #include <stdint.h>
 #include <pthread.h>
-#include <poll.h> // pollfds
-#include <sys/un.h> // sockaddr_un
-#include <sys/ioctl.h> // ioctl
-#include <sys/socket.h> //socket
+#include <poll.h>       /* pollfds */
+#include <sys/un.h>     /* sockaddr_un */
+#include <sys/ioctl.h>  /* ioctl */
+#include <sys/socket.h> /* socket */
 #include <sys/types.h>
-#include <sys/epoll.h> // epoll
-#include <sys/eventfd.h> // eventfd
+#include <sys/epoll.h>  /* epoll */
+#include <sys/eventfd.h> /* eventfd */
 #include <fcntl.h>
 #include <errno.h>
 
 #include "pims-internal.h"
 #include "pims-socket.h"
-#include "pims-debug.h"
 #include "pims-ipc-data.h"
 #include "pims-ipc-data-internal.h"
 #include "pims-ipc.h"
@@ -47,32 +46,27 @@
 
 static pthread_mutex_t __gmutex = PTHREAD_MUTEX_INITIALIZER;
 
-typedef enum
-{
+typedef enum {
 	PIMS_IPC_CALL_STATUS_READY = 0,
 	PIMS_IPC_CALL_STATUS_IN_PROGRESS
 } pims_ipc_call_status_e;
 
-typedef enum
-{
+typedef enum {
 	PIMS_IPC_MODE_REQ = 0,
 	PIMS_IPC_MODE_SUB
 } pims_ipc_mode_e;
 
-typedef struct
-{
+typedef struct {
 	pims_ipc_subscribe_cb callback;
 	void * user_data;
 } pims_ipc_cb_s;
 
-typedef struct
-{
+typedef struct {
 	char *call_id;
 	pims_ipc_data_h *handle;
-}pims_ipc_subscribe_data_s;
+} pims_ipc_subscribe_data_s;
 
-typedef struct
-{
+typedef struct {
 	int fd;
 	char *service;
 	char *id;
@@ -122,7 +116,7 @@ static void __pims_ipc_free_handle(pims_ipc_s *handle)
 {
 	pthread_mutex_lock(&__gmutex);
 
-	handle->epoll_stop_thread = true;
+	handle->epoll_stop_thread = TRUE;
 
 	if (handle->fd != -1)
 		close(handle->fd);
@@ -136,7 +130,7 @@ static void __pims_ipc_free_handle(pims_ipc_s *handle)
 	g_free(handle->service);
 
 	if (handle->async_channel) {
-		// remove a subscriber handle from the golbal list
+		/* remove a subscriber handle from the golbal list */
 		subscribe_handles = g_list_remove(subscribe_handles, handle);
 		VERBOSE("the count of subscribe handles = %d", g_list_length(subscribe_handles));
 
@@ -148,16 +142,18 @@ static void __pims_ipc_free_handle(pims_ipc_s *handle)
 		g_hash_table_destroy(handle->subscribe_cb_table);
 
 	pthread_mutex_lock(&handle->data_queue_mutex);
-	if (handle->data_queue) {
+	if (handle->data_queue)
 		g_list_free_full(handle->data_queue, __sub_data_free);
-	}
+
 	pthread_mutex_unlock(&handle->data_queue_mutex);
 	pthread_mutex_destroy(&handle->data_queue_mutex);
 
 	if (handle->subscribe_fd != -1)
 		close(handle->subscribe_fd);
 
-	g_source_remove(handle->disconnected_source);
+	if (0 < handle->disconnected_source)
+		g_source_remove(handle->disconnected_source);
+
 	pthread_mutex_destroy(&handle->call_status_mutex);
 
 	g_free(handle);
@@ -193,16 +189,15 @@ static int __pims_ipc_receive_for_subscribe(pims_ipc_s *handle)
 		}
 
 		cb_data = (pims_ipc_cb_s*)g_hash_table_lookup(handle->subscribe_cb_table, data->call_id);
-		if (cb_data == NULL) {
+		if (cb_data == NULL)
 			VERBOSE("unable to find %s", call_id);
-		}
 		else
 			cb_data->callback((pims_ipc_h)handle, data->handle, cb_data->user_data);
 
 		handle->data_queue = g_list_delete_link(handle->data_queue, cursor);
 		__sub_data_free(data);
 		pthread_mutex_unlock(&handle->data_queue_mutex);
-	} while(1);
+	} while (1);
 
 	return 0;
 }
@@ -211,16 +206,14 @@ static gboolean __pims_ipc_subscribe_handler(GIOChannel *src, GIOCondition condi
 {
 	pims_ipc_s *handle = (pims_ipc_s *)data;
 
-	VERBOSE("");
-
 	if (condition & G_IO_HUP)
 		return FALSE;
 
 	pthread_mutex_lock(&__gmutex);
 
-	// check if a subscriber handle is exists
+	/* check if a subscriber handle is exists */
 	if (g_list_find(subscribe_handles, handle) == NULL) {
-		ERROR("No such handle that ID is %p", handle);
+		ERR("No such handle that ID is %p", handle);
 		pthread_mutex_unlock(&__gmutex);
 		return FALSE;
 	}
@@ -245,30 +238,26 @@ static unsigned int __get_global_sequence_no()
 
 static int __pims_ipc_send_identify(pims_ipc_s *handle)
 {
-	unsigned int sequence_no;
+	unsigned int total_len, seq_no;
 	unsigned int client_id_len = strlen(handle->id);
-	unsigned int len = sizeof(unsigned int)		// total size
-		+ client_id_len + sizeof(unsigned int)		// client_id
-		+ sizeof(unsigned int)	;	// seq_no
 
-	char buf[len+1];
+	total_len = sizeof(total_len) + sizeof(client_id_len)+client_id_len + sizeof(seq_no);
+
 	int length = 0;
-	memset(buf, 0x0, len+1);
+	char buf[total_len+1];
+	memset(buf, 0x0, total_len+1);
 
-	// total len
-	memcpy(buf, (void*)&len, sizeof(unsigned int));
-	length += sizeof(unsigned int);
+	memcpy(buf, &total_len, sizeof(total_len));
+	length += sizeof(total_len);
 
-	// client_id
-	memcpy(buf+length, (void*)&(client_id_len), sizeof(unsigned int));
-	length += sizeof(unsigned int);
-	memcpy(buf+length, (void*)(handle->id), client_id_len);
+	memcpy(buf+length, &(client_id_len), sizeof(client_id_len));
+	length += sizeof(client_id_len);
+	memcpy(buf+length, handle->id, client_id_len);
 	length += client_id_len;
 
-	// seq_no
-	GET_CALL_SEQUNECE_NO(handle, sequence_no);
-	memcpy(buf+length, (void*)&(sequence_no), sizeof(unsigned int));
-	length += sizeof(unsigned int);
+	GET_CALL_SEQUNECE_NO(handle, seq_no);
+	memcpy(buf+length, &(seq_no), sizeof(seq_no));
+	length += sizeof(seq_no);
 
 	return socket_send(handle->fd, buf, length);
 }
@@ -279,20 +268,20 @@ static int __pims_ipc_read_data(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 	gboolean is_ok = FALSE;
 	int len = 0;
 	pims_ipc_data_h data = NULL;
-	unsigned int sequence_no = 0;
+	unsigned int seq_no = 0;
 	char *client_id = NULL;
 	char *call_id = NULL;
 	char *buf = NULL;
 
 	/* read the size of message. note that ioctl is non-blocking */
 	if (ioctl(handle->fd, FIONREAD, &len)) {
-		ERROR("ioctl failed: %d", errno);
+		ERR("ioctl failed: %d", errno);
 		return -1;
 	}
 
 	/* when server or client closed socket */
 	if (len == 0) {
-		ERROR("[IPC Socket] connection is closed");
+		ERR("[IPC Socket] connection is closed");
 		return -1;
 	}
 
@@ -301,99 +290,90 @@ static int __pims_ipc_read_data(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 		unsigned int total_len = 0;
 		unsigned int client_id_len = 0;
 		unsigned int call_id_len = 0;
-		unsigned int is_data = FALSE;
+		unsigned int has_data = FALSE;
 
-		// get total_len
-		read_len = TEMP_FAILURE_RETRY(read(handle->fd, (void *)&total_len, sizeof(unsigned int)));
+		read_len = TEMP_FAILURE_RETRY(read(handle->fd, &total_len, sizeof(total_len)));
 
-		// client_id
-		read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(client_id_len), sizeof(unsigned int)));
+		read_len += TEMP_FAILURE_RETRY(read(handle->fd, &(client_id_len), sizeof(client_id_len)));
 		if (client_id_len > 0 && client_id_len < UINT_MAX-1) {
 			client_id = calloc(1, client_id_len+1);
 			if (client_id == NULL) {
-				ERROR("calloc fail");
+				ERR("calloc fail");
 				break;
 			}
-		}
-		else
+		} else
 			break;
-		ret = socket_recv(handle->fd, (void *)&(client_id), client_id_len);
-		if (ret < 0) {  ERROR("socket_recv error"); break;	}
+		ret = socket_recv(handle->fd, (void *)&client_id, client_id_len);
+		if (ret < 0) {  ERR("socket_recv error"); break;	}
 		read_len += ret;
 
-		// sequence no
-		read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(sequence_no), sizeof(unsigned int)));
+		read_len += TEMP_FAILURE_RETRY(read(handle->fd, &seq_no, sizeof(seq_no)));
 		if (total_len == read_len) {
-			// send identity
+			/* send identity */
 			data = pims_ipc_data_create(0);
 			if (NULL == data) {
-				ERROR("pims_ipc_data_create() Fail");
+				ERR("pims_ipc_data_create() Fail");
 				break;
 			}
 			ret = pims_ipc_data_put(data, client_id, client_id_len);
 			if (ret != 0)
-				WARNING("pims_ipc_data_put fail(%d)", ret);
+				WARN("pims_ipc_data_put fail(%d)", ret);
 			break;
 		}
 
-		read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(call_id_len), sizeof(unsigned int)));
+		read_len += TEMP_FAILURE_RETRY(read(handle->fd, &call_id_len, sizeof(call_id_len)));
 		if (call_id_len > 0 && call_id_len < UINT_MAX-1) {
 			call_id = calloc(1, call_id_len+1);
 			if (call_id == NULL) {
-				ERROR("calloc fail");
+				ERR("calloc fail");
 				break;
 			}
-		}
-		else
+		} else
 			break;
 
-		ret = socket_recv(handle->fd, (void *)&(call_id), call_id_len);
-		if (ret < 0) {  ERROR("socket_recv error"); break;	}
+		ret = socket_recv(handle->fd, (void *)&call_id, call_id_len);
+		if (ret < 0) {  ERR("socket_recv error"); break;	}
 		read_len += ret;
 
-		read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(is_data), sizeof(unsigned int)));
-		if (is_data) {
+		read_len += TEMP_FAILURE_RETRY(read(handle->fd, &has_data, sizeof(has_data)));
+		if (has_data) {
 			unsigned int data_len;
-			read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(data_len), sizeof(unsigned int)));
+			read_len += TEMP_FAILURE_RETRY(read(handle->fd, &data_len, sizeof(data_len)));
 			if (data_len > 0 && data_len < UINT_MAX-1) {
 				buf = calloc(1, data_len+1);
 				if (buf == NULL) {
-					ERROR("calloc fail");
+					ERR("calloc fail");
 					break;
 				}
-			}
-			else
+			} else
 				break;
-			ret = socket_recv(handle->fd, (void *)&(buf), data_len);
-			if (ret < 0) {  ERROR("socket_recv error"); break;	}
+			ret = socket_recv(handle->fd, (void *)&buf, data_len);
+			if (ret < 0) {  ERR("socket_recv error"); break;	}
 			read_len += ret;
 
 			data = pims_ipc_data_steal_unmarshal(buf, data_len);
 			if (NULL == data) {
-				ERROR("pims_ipc_data_steal_unmarshal() Fail");
+				ERR("pims_ipc_data_steal_unmarshal() Fail");
 				break;
 			}
-			buf = NULL;
 		}
 
-		INFO("client_id :%s, call_id : %s, seq_no : %d", client_id, call_id, sequence_no);
-	} while(0);
+		INFO("client_id :%s, call_id : %s, seq_no : %d", client_id, call_id, seq_no);
+	} while (0);
 	free(client_id);
 	free(call_id);
 	free(buf);
 
-	if (sequence_no == handle->call_sequence_no) {
-		if (data_out != NULL) {
+	if (seq_no == handle->call_sequence_no) {
+		if (data_out != NULL)
 			*data_out = data;
-		}
 		else if (data)
 			pims_ipc_data_destroy(data);
 		is_ok = TRUE;
-	}
-	else {
+	} else {
 		if (data)
 			pims_ipc_data_destroy(data);
-		VERBOSE("received an mismatched response (%x:%x)", handle->call_sequence_no, sequence_no);
+		VERBOSE("received an mismatched response (%x:%x)", handle->call_sequence_no, seq_no);
 	}
 
 	if (is_ok)
@@ -405,27 +385,23 @@ static int __pims_ipc_read_data(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 static int __pims_ipc_receive(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 {
 	int ret = -1;
-	struct pollfd *pollfds = (struct pollfd*)calloc(1, sizeof (struct pollfd));
-	if (NULL == pollfds) {
-		ERROR("calloc() Fail");
-		return -1;
-	}
+	struct pollfd pollfds[1];
 
 	pollfds[0].fd = handle->fd;
 	pollfds[0].events = POLLIN | POLLERR | POLLHUP;
 
-	while(1) {
-		while(1) {
+	while (1) {
+		while (1) {
 			ret = poll(pollfds, 1, 1000);
-			if (ret == -1 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+			if (ret == -1 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
 				continue;
-			}
+
 			break;
 		}
 
 		if (ret > 0) {
 			if (pollfds[0].revents & (POLLERR|POLLHUP)) {
-				ERROR("Server disconnected");
+				ERR("Server disconnected");
 				ret = -1;
 				break;
 			}
@@ -435,29 +411,29 @@ static int __pims_ipc_receive(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 			}
 		}
 	}
-	free (pollfds);
+
 	return ret;
 }
 
 static int __open_subscribe_fd(pims_ipc_s *handle)
 {
-	// router inproc eventfd
-	int subscribe_fd = eventfd(0,0);
-	int flags;
 	int ret;
+	int flags;
 
+	int subscribe_fd = eventfd(0, 0);
 	if (-1 == subscribe_fd) {
-		ERROR("eventfd error : %d", errno);
+		ERR("eventfd error : %d", errno);
 		return -1;
 	}
 	VERBOSE("subscribe :%d\n", subscribe_fd);
 
-	flags = fcntl (subscribe_fd, F_GETFL, 0);
+	flags = fcntl(subscribe_fd, F_GETFL, 0);
 	if (flags == -1)
 		flags = 0;
-	ret = fcntl (subscribe_fd, F_SETFL, flags | O_NONBLOCK);
+
+	ret = fcntl(subscribe_fd, F_SETFL, flags | O_NONBLOCK);
 	if (0 != ret)
-		VERBOSE("subscribe fcntl : %d\n", ret);
+		ERR("fcntl() Fail(%d)", errno);
 
 	handle->subscribe_fd = subscribe_fd;
 	return 0;
@@ -474,7 +450,7 @@ static int __subscribe_data(pims_ipc_s * handle)
 	do {
 		/* read the size of message. note that ioctl is non-blocking */
 		if (ioctl(handle->fd, FIONREAD, &len)) {
-			ERROR("ioctl failed: %d", errno);
+			ERR("ioctl failed: %d", errno);
 			break;
 		}
 
@@ -488,59 +464,54 @@ static int __subscribe_data(pims_ipc_s * handle)
 		unsigned int read_len = 0;
 		unsigned int total_len = 0;
 		unsigned int call_id_len = 0;
-		unsigned int is_data = FALSE;
+		unsigned int has_data = FALSE;
 
-		// get total_len
-		read_len = TEMP_FAILURE_RETRY(read(handle->fd, (void *)&total_len, sizeof(unsigned int)));
+		read_len = TEMP_FAILURE_RETRY(read(handle->fd, &total_len, sizeof(total_len)));
 
-		// call_id
-		read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(call_id_len), sizeof(unsigned int)));
+		read_len += TEMP_FAILURE_RETRY(read(handle->fd, &call_id_len, sizeof(call_id_len)));
 		if (call_id_len > 0 && call_id_len < UINT_MAX-1) {
 			call_id = calloc(1, call_id_len+1);
 			if (call_id == NULL) {
-				ERROR("calloc fail");
+				ERR("calloc fail");
 				break;
 			}
-		}
-		else
+		} else
 			break;
 
-		ret = socket_recv(handle->fd, (void *)&(call_id), call_id_len);
-		if (ret < 0) {  ERROR("socket_recv error"); break; }
+		ret = socket_recv(handle->fd, (void *)&call_id, call_id_len);
+		if (ret < 0) {  ERR("socket_recv error"); break; }
 		read_len += ret;
 
-		// is_data
-		read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(is_data), sizeof(unsigned int)));
+		read_len += TEMP_FAILURE_RETRY(read(handle->fd, &has_data, sizeof(has_data)));
 
-		if (is_data) {
+		if (has_data) {
 			unsigned int data_len;
-			read_len += TEMP_FAILURE_RETRY(read(handle->fd, (void *)&(data_len), sizeof(unsigned int)));
+			read_len += TEMP_FAILURE_RETRY(read(handle->fd, &data_len, sizeof(data_len)));
 			if (data_len > 0 && data_len < UINT_MAX-1) {
 				buf = calloc(1, data_len+1);
 				if (buf == NULL) {
-					ERROR("calloc fail");
+					ERR("calloc fail");
 					break;
 				}
-			}
-			else
+			} else
 				break;
-			ret = socket_recv(handle->fd, (void *)&(buf), data_len);
+			ret = socket_recv(handle->fd, (void *)&buf, data_len);
 			if (ret < 0) {
-				ERROR("socket_recv error");
+				ERR("socket_recv error(%d)", ret);
 				break;
 			}
 			read_len += ret;
 
 			dhandle = pims_ipc_data_steal_unmarshal(buf, data_len);
 			if (NULL == dhandle) {
-				ERROR("pims_ipc_data_steal_unmarshal() Fail");
+				ERR("pims_ipc_data_steal_unmarshal() Fail");
 				break;
 			}
-			buf = NULL;
 
-			pims_ipc_subscribe_data_s *sub_data = (pims_ipc_subscribe_data_s *)calloc(1, sizeof(pims_ipc_subscribe_data_s));
+			pims_ipc_subscribe_data_s *sub_data;
+			sub_data = calloc(1, sizeof(pims_ipc_subscribe_data_s));
 			if (NULL == sub_data) {
-				ERROR("calloc() Fail");
+				ERR("calloc() Fail");
 				pims_ipc_data_destroy(dhandle);
 				ret = -1;
 				break;
@@ -555,7 +526,7 @@ static int __subscribe_data(pims_ipc_s * handle)
 			write_command(handle->subscribe_fd, 1);
 		}
 		ret = 0;
-	} while(0);
+	} while (0);
 
 	free(call_id);
 	free(buf);
@@ -567,7 +538,7 @@ static gboolean __hung_up_cb(gpointer data)
 	GList *cursor = NULL;
 
 	if (NULL == disconnected_list) {
-		DEBUG("No disconnected list");
+		DBG("No disconnected list");
 		return FALSE;
 	}
 
@@ -576,7 +547,7 @@ static gboolean __hung_up_cb(gpointer data)
 	while (cursor) {
 		pims_ipc_server_disconnected_cb_t *disconnected = cursor->data;
 		if (disconnected && disconnected->handle == data && disconnected->callback) {
-			DEBUG("call hung_up callback");
+			DBG("call hung_up callback");
 			disconnected->callback(disconnected->user_data);
 			break;
 		}
@@ -610,7 +581,6 @@ static void* __io_thread(void *data)
 		int i = 0;
 
 		pthread_mutex_lock(&__gmutex);
-
 		if (handle->epoll_stop_thread) {
 			pthread_mutex_unlock(&__gmutex);
 			break;
@@ -630,7 +600,7 @@ static void* __io_thread(void *data)
 
 		if (event_num == -1) {
 			if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
-				ERROR("errno:%d\n", errno);
+				ERR("errno:%d\n", errno);
 				break;
 			}
 		}
@@ -638,16 +608,16 @@ static void* __io_thread(void *data)
 		pthread_mutex_lock(&__gmutex);
 		for (i = 0; i < event_num; i++) {
 			if (events[i].events & EPOLLHUP) {
-				ERROR("server fd closed");
-				handle->epoll_stop_thread = true;
+				ERR("server fd closed");
+				handle->epoll_stop_thread = TRUE;
 				break;
 			}
 
 			if (events[i].events & EPOLLIN) {
-				if(__subscribe_data(handle) < 0) {
-					ERROR("server fd closed");
+				if (__subscribe_data(handle) < 0) {
+					ERR("server fd closed");
 					g_idle_add(__hung_up_cb, handle);
-					handle->epoll_stop_thread = true;
+					handle->epoll_stop_thread = TRUE;
 					break;
 				}
 			}
@@ -663,18 +633,19 @@ static void* __io_thread(void *data)
 static gboolean _g_io_hup_cb(GIOChannel *src, GIOCondition condition, gpointer data)
 {
 	if (G_IO_HUP & condition) {
-		DEBUG("hung up");
+		DBG("hung up");
 		__hung_up_cb(data);
 		return FALSE;
+
 	} else if (G_IO_IN & condition) {
 		char buf[1] = {0};
 		if (0 == recv(((pims_ipc_s *)data)->fd, buf, sizeof(buf), MSG_PEEK)) {
-			DEBUG("hung up");
+			DBG("hung up");
 			__hung_up_cb(data);
 			return FALSE;
 		}
 	} else {
-		ERROR("Invalid condition (%d)", condition);
+		ERR("Invalid condition (%d)", condition);
 	}
 	return TRUE;
 }
@@ -695,7 +666,7 @@ static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
 
 		handle = g_new0(pims_ipc_s, 1);
 		if (handle == NULL) {
-			ERROR("Failed to allocation");
+			ERR("Failed to allocation");
 			break;
 		}
 
@@ -705,14 +676,15 @@ static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
 		handle->id = g_strdup_printf("%x:%x", getpid(), __get_global_sequence_no());
 		handle->fd = socket(PF_UNIX, SOCK_STREAM, 0);
 		if (handle->fd < 0) {
-			ERROR("socket error : %d, errno: %d", handle->fd, errno);
+			ERR("socket error : %d, errno: %d", handle->fd, errno);
 			break;
 		}
-		int flags = fcntl (handle->fd, F_GETFL, 0);
+		int flags = fcntl(handle->fd, F_GETFL, 0);
 		if (flags == -1)
 			flags = 0;
-		ret = fcntl (handle->fd, F_SETFL, flags | O_NONBLOCK);
-		VERBOSE("socket fcntl : %d\n", ret);
+		ret = fcntl(handle->fd, F_SETFL, flags | O_NONBLOCK);
+		if (0 != ret)
+			ERR("fcntl() Fail(%d)", errno);
 
 		pthread_mutex_init(&handle->call_status_mutex, 0);
 
@@ -726,29 +698,30 @@ static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
 
 		ret = connect(handle->fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
 		if (ret != 0) {
-			ERROR("connect error : %d, errno: %d", ret, errno);
+			ERR("connect error : %d, errno: %d", ret, errno);
 			break;
 		}
 		VERBOSE("connect to server : socket:%s, client_sock:%d, %d\n", handle->service, handle->fd, ret);
 
 		if (mode == PIMS_IPC_MODE_REQ) {
 			GIOChannel *ch = g_io_channel_unix_new(handle->fd);
-			handle->disconnected_source = g_io_add_watch(ch, G_IO_IN|G_IO_HUP, _g_io_hup_cb, handle);
+			handle->disconnected_source = g_io_add_watch(ch, G_IO_IN|G_IO_HUP,
+					_g_io_hup_cb, handle);
+			g_io_channel_unref(ch);
 
 			handle->call_sequence_no = (unsigned int)time(NULL);
 			ret = __pims_ipc_send_identify(handle);
 			if (ret < 0) {
-				ERROR("__pims_ipc_send_identify error");
+				ERR("__pims_ipc_send_identify error");
 				break;
 			}
 			__pims_ipc_receive(handle, NULL);
 
-			if (pims_ipc_call(handle, PIMS_IPC_MODULE_INTERNAL, PIMS_IPC_FUNCTION_CREATE, NULL, NULL) != 0) {
-				WARNING("pims_ipc_call(PIMS_IPC_FUNCTION_CREATE) failed");
-			}
-		}
-		else {
-			handle->epoll_stop_thread = false;
+			if (pims_ipc_call(handle, PIMS_IPC_MODULE_INTERNAL, PIMS_IPC_FUNCTION_CREATE, NULL, NULL) != 0)
+				WARN("pims_ipc_call(PIMS_IPC_FUNCTION_CREATE) failed");
+
+		} else {
+			handle->epoll_stop_thread = FALSE;
 			pthread_mutex_init(&handle->data_queue_mutex, 0);
 
 			pthread_mutex_lock(&handle->data_queue_mutex);
@@ -767,22 +740,24 @@ static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
 
 			GIOChannel *async_channel = g_io_channel_unix_new(handle->subscribe_fd);
 			if (!async_channel) {
-				ERROR("g_io_channel_unix_new error");
+				ERR("g_io_channel_unix_new error");
 				break;
 			}
 			handle->async_channel = async_channel;
-			handle->async_source_id = g_io_add_watch(handle->async_channel, G_IO_IN|G_IO_HUP, __pims_ipc_subscribe_handler, handle);
-			handle->subscribe_cb_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+			handle->async_source_id = g_io_add_watch(handle->async_channel,
+					G_IO_IN|G_IO_HUP, __pims_ipc_subscribe_handler, handle);
+			handle->subscribe_cb_table = g_hash_table_new_full(g_str_hash, g_str_equal,
+					g_free, g_free);
 			ASSERT(handle->subscribe_cb_table);
 
-			// add a subscriber handle to the global list
+			/* add a subscriber handle to the global list */
 			subscribe_handles = g_list_append(subscribe_handles, handle);
 			VERBOSE("the count of subscribe handles = %d", g_list_length(subscribe_handles));
 		}
 
 		is_ok = TRUE;
 		VERBOSE("A new handle is created : %s, %s", handle->service, handle->id);
-	} while(0);
+	} while (0);
 
 	pthread_mutex_unlock(&__gmutex);
 
@@ -808,11 +783,12 @@ API pims_ipc_h pims_ipc_create_for_subscribe(char *service)
 
 static void __pims_ipc_destroy(pims_ipc_h ipc, pims_ipc_mode_e mode)
 {
-	pims_ipc_s *handle = (pims_ipc_s *)ipc;
+	pims_ipc_s *handle = ipc;
 
 	if (mode == PIMS_IPC_MODE_REQ) {
-		if (pims_ipc_call(handle, PIMS_IPC_MODULE_INTERNAL, PIMS_IPC_FUNCTION_DESTROY, NULL, NULL) != 0) {
-			WARNING("pims_ipc_call(PIMS_IPC_FUNCTION_DESTROY) failed");
+		if (pims_ipc_call(handle, PIMS_IPC_MODULE_INTERNAL, PIMS_IPC_FUNCTION_DESTROY,
+				NULL, NULL) != 0) {
+			WARN("pims_ipc_call(PIMS_IPC_FUNCTION_DESTROY) failed");
 		}
 	}
 
@@ -833,71 +809,62 @@ API void pims_ipc_destroy_for_subscribe(pims_ipc_h ipc)
 static int __pims_ipc_send(pims_ipc_s *handle, char *module, char *function, pims_ipc_data_h data_in)
 {
 	int ret = -1;
-	unsigned int sequence_no = 0;
+	int length = 0;
+	unsigned int total_len;
+	unsigned int seq_no = 0;
 	gchar *call_id = PIMS_IPC_MAKE_CALL_ID(module, function);
 	unsigned int call_id_len = strlen(call_id);
 	pims_ipc_data_s *data = NULL;
-	unsigned int is_data = FALSE;
+	unsigned int has_data = FALSE;
 	unsigned int client_id_len = strlen(handle->id);
-	int length = 0;
 
-	GET_CALL_SEQUNECE_NO(handle, sequence_no);
+	GET_CALL_SEQUNECE_NO(handle, seq_no);
 
-	int len = sizeof(unsigned int)						// total size
-		+ client_id_len + sizeof(unsigned int)	// client_id
-		+ sizeof(unsigned int)						// seq_no
-		+ call_id_len + sizeof(unsigned int)	// call_id
-		+ sizeof(unsigned int);						// is data
-
-	int total_len = len;
+	int len = sizeof(total_len)	+ sizeof(client_id_len) + client_id_len + sizeof(seq_no)
+		+ call_id_len + sizeof(call_id_len) + sizeof(has_data);
+	total_len = len;
 
 	if (data_in) {
-		is_data = TRUE;
-		data = (pims_ipc_data_s*)data_in;
+		has_data = TRUE;
+		data = data_in;
 		len += sizeof(unsigned int);
 		total_len = len + data->buf_size;
 	}
 
-	INFO("len : %d, client_id : %s, call_id : %s, seq_no :%d", len, handle->id, call_id, sequence_no);
+	INFO("len(%d),client_id(%s),call_id(%s),seq_no(%d)", len, handle->id, call_id, seq_no);
 
 	char buf[len+1];
-
 	memset(buf, 0x0, len+1);
 
-	memcpy(buf, (void*)&total_len, sizeof(unsigned int));
-	length += sizeof(unsigned int);
+	memcpy(buf, &total_len, sizeof(total_len));
+	length += sizeof(total_len);
 
-	// client_id
 	client_id_len = strlen(handle->id);
-	memcpy(buf+length, (void*)&(client_id_len), sizeof(unsigned int));
-	length += sizeof(unsigned int);
-	memcpy(buf+length, (void*)(handle->id), client_id_len);
+	memcpy(buf+length, &client_id_len, sizeof(client_id_len));
+	length += sizeof(client_id_len);
+	memcpy(buf+length, handle->id, client_id_len);
 	length += client_id_len;
 
-	// seq_no
-	memcpy(buf+length, (void*)&(sequence_no), sizeof(unsigned int));
-	length += sizeof(unsigned int);
+	memcpy(buf+length, &seq_no, sizeof(seq_no));
+	length += sizeof(seq_no);
 
-	// call id
-	memcpy(buf+length, (void*)&(call_id_len), sizeof(unsigned int));
-	length += sizeof(unsigned int);
-	memcpy(buf+length, (void*)(call_id), call_id_len);
+	memcpy(buf+length, &call_id_len, sizeof(call_id_len));
+	length += sizeof(call_id_len);
+	memcpy(buf+length, call_id, call_id_len);
 	length += call_id_len;
 	g_free(call_id);
 
-	// is_data
-	memcpy(buf+length, (void*)&(is_data), sizeof(unsigned int));
-	length += sizeof(unsigned int);
+	memcpy(buf+length, &has_data, sizeof(has_data));
+	length += sizeof(has_data);
 
-	if (is_data) {
-		memcpy(buf+length, (void*)&(data->buf_size), sizeof(unsigned int));
-		length += sizeof(unsigned int);
+	if (has_data) {
+		memcpy(buf+length, &(data->buf_size), sizeof(data->buf_size));
+		length += sizeof(data->buf_size);
 
 		ret = socket_send(handle->fd, buf, length);
 		if (ret > 0)
 			ret = socket_send_data(handle->fd, data->buf, data->buf_size);
-	}
-	else {
+	} else {
 		ret = socket_send(handle->fd, buf, length);
 	}
 
@@ -910,47 +877,37 @@ static int __pims_ipc_send(pims_ipc_s *handle, char *module, char *function, pim
 API int pims_ipc_call(pims_ipc_h ipc, char *module, char *function, pims_ipc_data_h data_in,
 		pims_ipc_data_h *data_out)
 {
-	pims_ipc_s *handle = (pims_ipc_s *)ipc;
+	pims_ipc_s *handle = ipc;
 
-
-	if (ipc == NULL) {
-		ERROR("invalid handle : %p", ipc);
-		return -1;
-	}
-
-	if (!module || !function) {
-		ERROR("invalid argument");
-		return -1;
-	}
+	RETV_IF(NULL == ipc, -1);
+	RETV_IF(NULL == module, -1);
+	RETV_IF(NULL == function, -1);
 
 	pthread_mutex_lock(&handle->call_status_mutex);
 	if (handle->call_status != PIMS_IPC_CALL_STATUS_READY) {
 		pthread_mutex_unlock(&handle->call_status_mutex);
-		ERROR("the previous call is in progress : %p", ipc);
+		ERR("the previous call is in progress : %p", ipc);
 		return -1;
 	}
 	pthread_mutex_unlock(&handle->call_status_mutex);
 
-
-	if (__pims_ipc_send(handle, module, function, data_in) != 0) {
+	if (__pims_ipc_send(handle, module, function, data_in) != 0)
 		return -1;
-	}
 
-	if (__pims_ipc_receive(handle, data_out) != 0) {
+	if (__pims_ipc_receive(handle, data_out) != 0)
 		return -1;
-	}
 
 	return 0;
 }
 
 static gboolean __call_async_idler_cb(gpointer data)
 {
-	VERBOSE("");
+	pims_ipc_s *handle = data;
+	pims_ipc_data_h dhandle;
 
-	pims_ipc_s *handle = (pims_ipc_s *)data;
-	ASSERT(handle);
-	ASSERT(handle->dhandle_for_async_idler);
-	pims_ipc_data_h dhandle = handle->dhandle_for_async_idler;
+	RETV_IF(NULL == handle, FALSE);
+
+	dhandle = handle->dhandle_for_async_idler;
 	handle->dhandle_for_async_idler = NULL;
 
 	pthread_mutex_lock(&handle->call_status_mutex);
@@ -963,9 +920,10 @@ static gboolean __call_async_idler_cb(gpointer data)
 	return FALSE;
 }
 
-static gboolean __pims_ipc_call_async_handler(GIOChannel *src, GIOCondition condition, gpointer data)
+static gboolean __pims_ipc_call_async_handler(GIOChannel *src, GIOCondition condition,
+		gpointer data)
 {
-	pims_ipc_s *handle = (pims_ipc_s *)data;
+	pims_ipc_s *handle = data;
 	pims_ipc_data_h dhandle = NULL;
 
 	if (__pims_ipc_receive(handle, &dhandle) == 0) {
@@ -975,19 +933,18 @@ static gboolean __pims_ipc_call_async_handler(GIOChannel *src, GIOCondition cond
 		if (handle->call_status != PIMS_IPC_CALL_STATUS_IN_PROGRESS) {
 			pthread_mutex_unlock(&handle->call_status_mutex);
 			pims_ipc_data_destroy(dhandle);
-		}
-		else {
+		} else {
 			pthread_mutex_unlock(&handle->call_status_mutex);
-			if (src == NULL) {    // A response is arrived too quickly
+			if (src == NULL) {    /* A response is arrived too quickly */
 				handle->dhandle_for_async_idler = dhandle;
 				g_idle_add(__call_async_idler_cb, handle);
-			}
-			else {
+			} else {
 				pthread_mutex_lock(&handle->call_status_mutex);
 				handle->call_status = PIMS_IPC_CALL_STATUS_READY;
 				pthread_mutex_unlock(&handle->call_status_mutex);
 
-				handle->call_async_callback((pims_ipc_h)handle, dhandle, handle->call_async_userdata);
+				handle->call_async_callback((pims_ipc_h)handle, dhandle,
+						handle->call_async_userdata);
 				pims_ipc_data_destroy(dhandle);
 			}
 		}
@@ -995,26 +952,21 @@ static gboolean __pims_ipc_call_async_handler(GIOChannel *src, GIOCondition cond
 	return FALSE;
 }
 
-API int pims_ipc_call_async(pims_ipc_h ipc, char *module, char *function, pims_ipc_data_h data_in,
-		pims_ipc_call_async_cb callback, void *userdata)
+API int pims_ipc_call_async(pims_ipc_h ipc, char *module, char *function,
+		pims_ipc_data_h data_in, pims_ipc_call_async_cb callback, void *user_data)
 {
-	pims_ipc_s *handle = (pims_ipc_s *)ipc;
+	pims_ipc_s *handle = ipc;
 	guint source_id = 0;
 
-	if (ipc == NULL) {
-		ERROR("invalid handle : %p", ipc);
-		return -1;
-	}
-
-	if (!module || !function || !callback) {
-		ERROR("invalid argument");
-		return -1;
-	}
+	RETV_IF(NULL == ipc, -1);
+	RETV_IF(NULL == module, -1);
+	RETV_IF(NULL == function, -1);
+	RETV_IF(NULL == callback, -1);
 
 	pthread_mutex_lock(&handle->call_status_mutex);
 	if (handle->call_status != PIMS_IPC_CALL_STATUS_READY) {
 		pthread_mutex_unlock(&handle->call_status_mutex);
-		ERROR("the previous call is in progress : %p", ipc);
+		ERR("the previous call is in progress : %p", ipc);
 		return -1;
 	}
 	pthread_mutex_unlock(&handle->call_status_mutex);
@@ -1024,18 +976,19 @@ API int pims_ipc_call_async(pims_ipc_h ipc, char *module, char *function, pims_i
 	pthread_mutex_unlock(&handle->call_status_mutex);
 
 	handle->call_async_callback = callback;
-	handle->call_async_userdata = userdata;
+	handle->call_async_userdata = user_data;
 
-	// add a callback for GIOChannel
+	/* add a callback for GIOChannel */
 	if (!handle->async_channel) {
 		handle->async_channel = g_io_channel_unix_new(handle->fd);
 		if (!handle->async_channel) {
-			ERROR("g_io_channel_unix_new error");
+			ERR("g_io_channel_unix_new error");
 			return -1;
 		}
 	}
 
-	source_id = g_io_add_watch(handle->async_channel, G_IO_IN, __pims_ipc_call_async_handler, handle);
+	source_id = g_io_add_watch(handle->async_channel, G_IO_IN,
+			__pims_ipc_call_async_handler, handle);
 	handle->async_source_id = source_id;
 
 	if (__pims_ipc_send(handle, module, function, data_in) != 0) {
@@ -1048,47 +1001,41 @@ API int pims_ipc_call_async(pims_ipc_h ipc, char *module, char *function, pims_i
 	return 0;
 }
 
-API bool pims_ipc_is_call_in_progress(pims_ipc_h ipc)
+API int pims_ipc_is_call_in_progress(pims_ipc_h ipc)
 {
 	int ret;
-	pims_ipc_s *handle = (pims_ipc_s *)ipc;
+	pims_ipc_s *handle = ipc;
 
-	if (ipc == NULL) {
-		ERROR("invalid handle : %p", ipc);
-		return false;
-	}
+	RETV_IF(NULL == ipc, FALSE);
 
 	pthread_mutex_lock(&handle->call_status_mutex);
 	if (handle->call_status == PIMS_IPC_CALL_STATUS_IN_PROGRESS)
-		ret = true;
+		ret = TRUE;
 	else
-		ret = false;
+		ret = FALSE;
 	pthread_mutex_unlock(&handle->call_status_mutex);
 	return ret;
 }
 
-API int pims_ipc_subscribe(pims_ipc_h ipc, char *module, char *event, pims_ipc_subscribe_cb callback, void *userdata)
+API int pims_ipc_subscribe(pims_ipc_h ipc, char *module, char *event,
+		pims_ipc_subscribe_cb callback, void *user_data)
 {
 	gchar *call_id = NULL;
+	pims_ipc_s *handle = ipc;
 	pims_ipc_cb_s *cb_data = NULL;
-	pims_ipc_s *handle = (pims_ipc_s *)ipc;
 
-	if (ipc == NULL || handle->subscribe_cb_table == NULL) {
-		ERROR("invalid handle : %p", ipc);
-		return -1;
-	}
-
-	if (!module || !event || !callback) {
-		ERROR("invalid argument");
-		return -1;
-	}
+	RETV_IF(NULL == ipc, -1);
+	RETV_IF(NULL == module, -1);
+	RETV_IF(NULL == event, -1);
+	RETV_IF(NULL == callback, -1);
+	RETV_IF(NULL == handle->subscribe_cb_table, -1);
 
 	cb_data = g_new0(pims_ipc_cb_s, 1);
 	call_id = PIMS_IPC_MAKE_CALL_ID(module, event);
 
 	VERBOSE("subscribe cb id[%s]", call_id);
 	cb_data->callback = callback;
-	cb_data->user_data = userdata;
+	cb_data->user_data = user_data;
 	g_hash_table_insert(handle->subscribe_cb_table, call_id, cb_data);
 
 	return 0;
@@ -1097,24 +1044,19 @@ API int pims_ipc_subscribe(pims_ipc_h ipc, char *module, char *event, pims_ipc_s
 API int pims_ipc_unsubscribe(pims_ipc_h ipc, char *module, char *event)
 {
 	gchar *call_id = NULL;
-	pims_ipc_s *handle = (pims_ipc_s *)ipc;
+	pims_ipc_s *handle = ipc;
 
-	if (ipc == NULL || handle->subscribe_cb_table == NULL) {
-		ERROR("invalid handle : %p", ipc);
-		return -1;
-	}
-
-	if (!module || !event) {
-		ERROR("invalid argument");
-		return -1;
-	}
+	RETV_IF(NULL == ipc, -1);
+	RETV_IF(NULL == module, -1);
+	RETV_IF(NULL == event, -1);
+	RETV_IF(NULL == handle->subscribe_cb_table, -1);
 
 	call_id = PIMS_IPC_MAKE_CALL_ID(module, event);
 
 	VERBOSE("unsubscribe cb id[%s]", call_id);
 
 	if (g_hash_table_remove(handle->subscribe_cb_table, call_id) != TRUE) {
-		ERROR("g_hash_table_remove error");
+		ERR("g_hash_table_remove error");
 		g_free(call_id);
 		return -1;
 	}
@@ -1123,7 +1065,8 @@ API int pims_ipc_unsubscribe(pims_ipc_h ipc, char *module, char *event)
 	return 0;
 }
 
-API int pims_ipc_add_server_disconnected_cb(pims_ipc_h handle, pims_ipc_server_disconnected_cb callback, void *user_data)
+API int pims_ipc_add_server_disconnected_cb(pims_ipc_h handle,
+		pims_ipc_server_disconnected_cb callback, void *user_data)
 {
 	GList *cursor = NULL;
 
@@ -1133,7 +1076,7 @@ API int pims_ipc_add_server_disconnected_cb(pims_ipc_h handle, pims_ipc_server_d
 	while (cursor) {
 		pims_ipc_server_disconnected_cb_t *disconnected = cursor->data;
 		if (disconnected && disconnected->handle == handle) {
-			ERROR("Already set callback");
+			ERR("Already set callback");
 			pthread_mutex_unlock(&__disconnect_cb_mutex);
 			return -1;
 		}
@@ -1145,10 +1088,10 @@ API int pims_ipc_add_server_disconnected_cb(pims_ipc_h handle, pims_ipc_server_d
 	pims_ipc_server_disconnected_cb_t *disconnected = NULL;
 	disconnected = calloc(1, sizeof(pims_ipc_server_disconnected_cb_t));
 	if (NULL == disconnected) {
-		ERROR("Calloc() Fail");
+		ERR("calloc() Fail");
 		return -1;
 	}
-	DEBUG("add disconnected");
+	DBG("add disconnected");
 	disconnected->handle = handle;
 	disconnected->callback = callback;
 	disconnected->user_data = user_data;
@@ -1171,7 +1114,7 @@ API int pims_ipc_remove_server_disconnected_cb(pims_ipc_h handle)
 		if (disconnected && disconnected->handle == handle) {
 			free(disconnected);
 			disconnected_list = g_list_delete_link(disconnected_list, cursor);
-			DEBUG("remove disconnected_cb");
+			DBG("remove disconnected_cb");
 			break;
 		}
 		cursor = g_list_next(cursor);
@@ -1191,7 +1134,8 @@ API int pims_ipc_unset_server_disconnected_cb()
 	return 0;
 }
 
-API int pims_ipc_set_server_disconnected_cb(pims_ipc_server_disconnected_cb callback, void *user_data)
+API int pims_ipc_set_server_disconnected_cb(pims_ipc_server_disconnected_cb callback,
+		void *user_data)
 {
 	pthread_mutex_lock(&__disconnect_cb_mutex);
 	_server_disconnected_cb.callback = callback;

@@ -1,7 +1,7 @@
 /*
  * PIMS IPC
  *
- * Copyright (c) 2012 - 2015 Samsung Electronics Co., Ltd. All rights reserved.
+ * Copyright (c) 2012 - 2016 Samsung Electronics Co., Ltd. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the License);
  * you may not use this file except in compliance with the License.
@@ -30,16 +30,18 @@ extern "C"
 pims_ipc_h pims_ipc_create(char *service);
 void pims_ipc_destroy(pims_ipc_h ipc);
 int pims_ipc_call(pims_ipc_h ipc, char *module, char *function, pims_ipc_data_h data_in,
-                  pims_ipc_data_h *data_out);
-int pims_ipc_call_async(pims_ipc_h ipc, char *module, char *function, pims_ipc_data_h data_in,
-                        pims_ipc_call_async_cb callback, void *userdata);
-bool pims_ipc_is_call_in_progress(pims_ipc_h ipc);
+		pims_ipc_data_h *data_out);
+int pims_ipc_call_async(pims_ipc_h ipc, char *module, char *function,
+		pims_ipc_data_h data_in, pims_ipc_call_async_cb callback, void *user_data);
+int pims_ipc_is_call_in_progress(pims_ipc_h ipc);
 
 pims_ipc_h pims_ipc_create_for_subscribe(char *service);
 void pims_ipc_destroy_for_subscribe(pims_ipc_h ipc);
-int pims_ipc_subscribe(pims_ipc_h ipc, char *module, char *event, pims_ipc_subscribe_cb callback, void *userdata);
+int pims_ipc_subscribe(pims_ipc_h ipc, char *module, char *event,
+		pims_ipc_subscribe_cb callback, void *user_data);
 int pims_ipc_unsubscribe(pims_ipc_h ipc, char *module, char *event);
-int pims_ipc_add_server_disconnected_cb(pims_ipc_h ipc, pims_ipc_server_disconnected_cb callback, void *user_data);
+int pims_ipc_add_server_disconnected_cb(pims_ipc_h ipc,
+		pims_ipc_server_disconnected_cb callback, void *user_data);
 int pims_ipc_remove_server_disconnected_cb(pims_ipc_h ipc);
 
 /* start deprecated */
