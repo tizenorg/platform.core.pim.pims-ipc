@@ -1,7 +1,7 @@
 /*
  * PIMS IPC
  *
- * Copyright (c) 2012 - 2015 Samsung Electronics Co., Ltd. All rights reserved.
+ * Copyright (c) 2012 - 2016 Samsung Electronics Co., Ltd. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the License);
  * you may not use this file except in compliance with the License.
@@ -25,21 +25,20 @@
 #include <glib.h>
 
 #include "pims-internal.h"
-#include "pims-debug.h"
 #include "pims-ipc-data.h"
 
 /*
-	Structure of data with type(4 bytes order)
-	+------------------------------------------------------------------+
-	| type | size | data        | pad | type | size | data       | pad |
-	+------------------------------------------------------------------+
-		4      4     size         0-3          (Size of bytes)
-
-	Structure of data without type(4 bytes order)
-	+----------------------------------------------------+
-	| size | data        | pad | size | data       | pad |
-	+----------------------------------------------------+
-		4     size         0-3        (Size of bytes)
+ * Structure of data with type(4 bytes order)
+ * +------------------------------------------------------------------+
+ * | type | size | data        | pad | type | size | data       | pad |
+ * +------------------------------------------------------------------+
+ * 4      4     size         0-3          (Size of bytes)
+ *
+ * Structure of data without type(4 bytes order)
+ * +----------------------------------------------------+
+ * | size | data        | pad | size | data       | pad |
+ * +----------------------------------------------------+
+ * 4     size         0-3        (Size of bytes)
  */
 
 #define _get_used_size_with_type(data_size) \
@@ -50,21 +49,26 @@
 
 API pims_ipc_data_h pims_ipc_data_create_with_size(unsigned int size, int flags)
 {
-	//	ENTER();
-	int ret = -1;
 	pims_ipc_data_s *handle = NULL;
 
 	handle = calloc(1, sizeof(pims_ipc_data_s));
 	if (NULL == handle) {
-		ERROR("calloc() Fail");
+		ERR("calloc() Fail");
 		return NULL;
 	}
+
+	if (flags & PIMS_IPC_DATA_FLAGS_WITH_TYPE) {
+		ERR("Not supported with-type mode");
+		free(handle);
+		return NULL;
+	}
+
 	handle->alloc_size = size;
 	handle->free_size = size;
 	handle->buf_size = 0;
 	handle->buf = calloc(1, size);
 	if (NULL == handle->buf) {
-		ERROR("calloc() Fail");
+		ERR("calloc() Fail");
 		free(handle);
 		return NULL;
 	}
@@ -72,19 +76,13 @@ API pims_ipc_data_h pims_ipc_data_create_with_size(unsigned int size, int flags)
 	handle->created = 1;
 	handle->buf_alloced = 1;
 
-	ret = pims_ipc_data_put(handle, &flags, sizeof(int));
-
-	ASSERT(ret == 0);
-	handle->flags = flags;
-
 	return handle;
 }
 
 API void pims_ipc_data_destroy(pims_ipc_data_h data)
 {
-	//	ENTER();
-	pims_ipc_data_s *handle = (pims_ipc_data_s *)data;
-	if (!handle)
+	pims_ipc_data_s *handle = data;
+	if (NULL == handle)
 		return;
 
 	if (handle->buf_alloced)
@@ -95,24 +93,17 @@ API void pims_ipc_data_destroy(pims_ipc_data_h data)
 
 API int pims_ipc_data_put(pims_ipc_data_h data, void *buf, unsigned int size)
 {
-	//	ENTER();
-	pims_ipc_data_s *handle = NULL;
+	pims_ipc_data_s *handle = data;
 	unsigned int dsize = size;
 	unsigned int used_size = 0;
-	handle = (pims_ipc_data_s *)data;
 
 	if (handle->created == 0) {
-		ERROR("This handle isn't create mode.");
-		return -1;
-	}
-
-	if (handle->flags & PIMS_IPC_DATA_FLAGS_WITH_TYPE) {
-		ERROR("Not without-type mode");
+		ERR("This handle isn't create mode.");
 		return -1;
 	}
 
 	if (dsize > 0 && buf == NULL) {
-		ERROR("Invalid argument");
+		ERR("Invalid argument");
 		return -1;
 	}
 
@@ -125,7 +116,7 @@ API int pims_ipc_data_put(pims_ipc_data_h data, void *buf, unsigned int size)
 			new_size *= 2;
 		handle->buf = realloc(handle->buf, new_size);
 		if (NULL == handle->buf) {
-			ERROR("realloc() Fail");
+			ERR("realloc() Fail");
 			return -1;
 		}
 		handle->alloc_size = new_size;
@@ -154,30 +145,24 @@ API int pims_ipc_data_put(pims_ipc_data_h data, void *buf, unsigned int size)
 
 API void* pims_ipc_data_get(pims_ipc_data_h data, unsigned int *size)
 {
-	//	ENTER();
-	pims_ipc_data_s *handle = NULL;
+	pims_ipc_data_s *handle = data;
 	unsigned int dsize = 0;
 	unsigned int used_size = 0;
 	void *buf = NULL;
-	handle = (pims_ipc_data_s *)data;
 
 	if (handle->created == 1) {
-		ERROR("This handle is create mode.");
+		ERR("This handle is create mode.");
 		return NULL;
 	}
 	if (handle->buf_size == 0) {
-		ERROR("Remain buffer size is 0.");
-		return NULL;
-	}
-	if (handle->flags & PIMS_IPC_DATA_FLAGS_WITH_TYPE) {
-		ERROR("Not without-type mode");
+		ERR("Remain buffer size is 0.");
 		return NULL;
 	}
 
 	dsize = *(int*)(handle->pos);
 	buf = (handle->pos+sizeof(int));
 
-	if (dsize == 0) // current position is next size field becasue data size is 0
+	if (dsize == 0) /* current position is next size field becasue data size is 0 */
 		buf = NULL;
 
 	used_size = _get_used_size(dsize);
@@ -192,34 +177,30 @@ API void* pims_ipc_data_get(pims_ipc_data_h data, unsigned int *size)
 
 pims_ipc_data_h pims_ipc_data_steal_unmarshal(void *buf, unsigned int size)
 {
-	//	ENTER();
-	void *ptr = NULL;
 	pims_ipc_data_s *handle = NULL;
 
 	VERBOSE("size : %d", size);
 	handle = calloc(1, sizeof(pims_ipc_data_s));
 	if (NULL == handle) {
-		ERROR("calloc() Fail");
+		ERR("calloc() handle Fail");
 		return NULL;
 	}
+	handle->buf = calloc(1, size + 1);
+	if (NULL == handle->buf) {
+		ERR("calloc() buf Fail");
+		free(handle);
+		return NULL;
+	}
+	memcpy(handle->buf, buf, size);
+
 	handle->alloc_size = size;
 	handle->free_size = 0;
 	handle->buf_size = handle->alloc_size;
-	handle->buf = buf;
 	handle->pos = handle->buf;
 	handle->created = 0;
 	handle->buf_alloced = 1;
 
-	ptr = pims_ipc_data_get(handle, &size);
-	if (!ptr || size != sizeof(int)) {
-		ERROR("pims_ipc_data_get : error");
-		free(handle->buf);
-		free(handle);
-		return NULL;
-	}
-	handle->flags = *((int*)ptr);
-
-	VERBOSE("handle[%p] flags[%x]", handle, handle->flags);
+	VERBOSE("handle[%p]", handle);
 
 	return handle;
 }

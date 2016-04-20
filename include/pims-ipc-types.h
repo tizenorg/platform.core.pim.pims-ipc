@@ -1,7 +1,7 @@
 /*
  * PIMS IPC
  *
- * Copyright (c) 2012 - 2015 Samsung Electronics Co., Ltd. All rights reserved.
+ * Copyright (c) 2012 - 2016 Samsung Electronics Co., Ltd. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the License);
  * you may not use this file except in compliance with the License.
@@ -36,26 +36,26 @@ typedef void* pims_ipc_h;
 typedef void* pims_ipc_data_h;
 
 typedef enum {
-    PIMS_IPC_DATA_TYPE_INVALID,
-    PIMS_IPC_DATA_TYPE_CHAR,
-    PIMS_IPC_DATA_TYPE_UCHAR,
-    PIMS_IPC_DATA_TYPE_INT,
-    PIMS_IPC_DATA_TYPE_UINT,
-    PIMS_IPC_DATA_TYPE_LONG,
-    PIMS_IPC_DATA_TYPE_ULONG,
-    PIMS_IPC_DATA_TYPE_FLOAT,
-    PIMS_IPC_DATA_TYPE_DOUBLE,
-    PIMS_IPC_DATA_TYPE_STRING,
-    PIMS_IPC_DATA_TYPE_MEMORY,
+	PIMS_IPC_DATA_TYPE_INVALID,
+	PIMS_IPC_DATA_TYPE_CHAR,
+	PIMS_IPC_DATA_TYPE_UCHAR,
+	PIMS_IPC_DATA_TYPE_INT,
+	PIMS_IPC_DATA_TYPE_UINT,
+	PIMS_IPC_DATA_TYPE_LONG,
+	PIMS_IPC_DATA_TYPE_ULONG,
+	PIMS_IPC_DATA_TYPE_FLOAT,
+	PIMS_IPC_DATA_TYPE_DOUBLE,
+	PIMS_IPC_DATA_TYPE_STRING,
+	PIMS_IPC_DATA_TYPE_MEMORY,
 } pims_ipc_data_type_e;
 
 typedef void (*pims_ipc_svc_call_cb)(pims_ipc_h ipc, pims_ipc_data_h data_in,
-                                    pims_ipc_data_h *data_out, void *userdata);
-typedef void (*pims_ipc_svc_client_disconnected_cb)(pims_ipc_h ipc, void *userdata);
+		pims_ipc_data_h *data_out, void *user_data);
+typedef void (*pims_ipc_svc_client_disconnected_cb)(pims_ipc_h ipc, void *user_data);
 
-typedef void (*pims_ipc_call_async_cb)(pims_ipc_h ipc, pims_ipc_data_h data_out, void *userdata);
-typedef void (*pims_ipc_subscribe_cb)(pims_ipc_h ipc, pims_ipc_data_h data, void *userdata);
-typedef void (*pims_ipc_server_disconnected_cb)(void *userdata);
+typedef void (*pims_ipc_call_async_cb)(pims_ipc_h ipc, pims_ipc_data_h data_out, void *user_data);
+typedef void (*pims_ipc_subscribe_cb)(pims_ipc_h ipc, pims_ipc_data_h data, void *user_data);
+typedef void (*pims_ipc_server_disconnected_cb)(void *user_data);
 
 
 #ifdef __cplusplus
