@@ -1,7 +1,7 @@
 /*
  * PIMS IPC
  *
- * Copyright (c) 2012 - 2015 Samsung Electronics Co., Ltd. All rights reserved.
+ * Copyright (c) 2012 - 2013 Samsung Electronics Co., Ltd. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the License);
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-
 #ifndef __PIMS_INTERNAL_H__
 #define __PIMS_INTERNAL_H__
+
+#include <glib.h>
+
+#include "pims-debug.h"
+
 
 #ifdef __cplusplus
 extern "C"
@@ -44,10 +47,11 @@ typedef struct {
 	unsigned int free_size;
 	char *pos;
 	char *buf;
-	int flags;
 	unsigned int created:1;
 	unsigned int buf_alloced:1;
 } pims_ipc_data_s;
+
+gboolean svc_map_client_worker(gpointer user_data);
 
 #ifdef __cplusplus
 }

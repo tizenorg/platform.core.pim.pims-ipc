@@ -1,7 +1,7 @@
 /*
  * PIMS IPC
  *
- * Copyright (c) 2012 - 2015 Samsung Electronics Co., Ltd. All rights reserved.
+ * Copyright (c) 2012 - 2013 Samsung Electronics Co., Ltd. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the License);
  * you may not use this file except in compliance with the License.
@@ -37,12 +37,9 @@ int pims_ipc_svc_deinit_for_publish(void);
 int pims_ipc_svc_publish(char *module, char *event, pims_ipc_data_h data);
 
 void pims_ipc_svc_run_main_loop(GMainLoop* main_loop);
-
 void pims_ipc_svc_set_client_disconnected_cb(pims_ipc_svc_client_disconnected_cb callback, void *userdata);
-
 int pims_ipc_svc_get_smack_label(pims_ipc_h ipc, char **p_smack);
 bool pims_ipc_svc_check_privilege(pims_ipc_h ipc, char *privilege);
-
 
 #ifdef __cplusplus
 }

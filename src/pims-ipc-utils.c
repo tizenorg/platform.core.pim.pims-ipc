@@ -15,28 +15,34 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <pthread.h>
 
+#include "pims-internal.h"
 
-#ifndef __PIMS_IPC_DATA_H__
-#define __PIMS_IPC_DATA_H__
-
-#include <pims-ipc-types.h>
-
-#ifdef __cplusplus
-extern "C"
+void utils_launch_thread(void *(*start_routine)(void *), void *data)
 {
-#endif
+	int ret = 0;
 
-#define pims_ipc_data_create(flags) pims_ipc_data_create_with_size(1024, (flags))
+	pthread_t worker;
+	pthread_attr_t attr;
 
-pims_ipc_data_h pims_ipc_data_create_with_size(unsigned int size, int flags);
-void pims_ipc_data_destroy(pims_ipc_data_h ipc);
-void* pims_ipc_data_get(pims_ipc_data_h data, unsigned int *size);
-int pims_ipc_data_put(pims_ipc_data_h data, void *buf, unsigned int size);
+	// set kernel thread
+	ret = pthread_attr_init(&attr);
+	if (0 != ret) {
+		ERR("pthread_attr_init() Fail(%d)", ret);
+		return;
+	}
+	ret = pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM);
+	if (0 != ret) {
+		ERR("pthread_attr_setscope() Fail(%d)", ret);
+		return;
+	}
+	ret = pthread_create(&worker, &attr, start_routine, data);
+	if (0 != ret) {
+		ERR("pthread_create() Fail(%d)", ret);
+		return;
+	}
 
-
-#ifdef __cplusplus
+	pthread_detach(worker);
 }
-#endif
 
-#endif /* __PIMS_IPC_DATA_H__ */

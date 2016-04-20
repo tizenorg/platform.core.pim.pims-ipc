@@ -1,7 +1,7 @@
 /*
  * PIMS IPC
  *
- * Copyright (c) 2012 - 2015 Samsung Electronics Co., Ltd. All rights reserved.
+ * Copyright (c) 2012 - 2013 Samsung Electronics Co., Ltd. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the License);
  * you may not use this file except in compliance with the License.
@@ -22,34 +22,48 @@
 
 #include <assert.h>
 
-#define LOG_TAG     "PIMS_IPC"
+#define LOG_TAG "PIMS_IPC"
 #include <dlog.h>
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
 
-#define PIMS_VERBOSE_TAG(frmt, args...) SLOGV(frmt, ##args);
-#define PIMS_DEBUG_TAG(frmt, args...)   SLOGD(frmt, ##args);
-#define PIMS_INFO_TAG(frmt, args...)    SLOGI(frmt, ##args);
-#define PIMS_WARN_TAG(frmt, args...)    SLOGV(frmt, ##args);
-#define PIMS_ERROR_TAG(frmt, args...)   SLOGE(frmt, ##args);
-
-
-#define ENTER()	PIMS_DEBUG_TAG(">>>>>>>> called")
-#define LEAVE()	PIMS_DEBUG_TAG("<<<<<<<< ended")
-
-//#define VERBOSE(frmt, args...)  PIMS_VERBOSE_TAG(frmt, ##args)
+//#define VERBOSE(frmt, args...) SLOGV(frmt, ##args)
 #define VERBOSE(frmt, args...)
-#define DEBUG(frmt, args...)    PIMS_DEBUG_TAG(frmt, ##args)
-#define INFO(frmt, args...)     PIMS_INFO_TAG(frmt, ##args)
-#define WARNING(frmt, args...)  PIMS_WARN_TAG(frmt, ##args)
-#define ERROR(frmt, args...)    PIMS_ERROR_TAG(frmt, ##args)
+#define DBG(frmt, args...) SLOGD(frmt, ##args)
+#define INFO(frmt, args...) SLOGI(frmt, ##args)
+#define WARN(frmt, args...) SLOGV(frmt, ##args)
+#define ERR(frmt, args...) SLOGE(frmt, ##args)
+
+#define FN_CALL() DBG(">>>>>>>> called")
+#define FN_END() DBG("<<<<<<<< ended")
+
+#define RET_IF(expr) do { \
+	if (expr) { \
+		ERR("(%s)", #expr); \
+		return; \
+	} \
+} while (0)
+#define RETV_IF(expr, val) do { \
+	if (expr) { \
+		ERR("(%s)", #expr); \
+		return (val); \
+	} \
+} while (0)
+#define RETM_IF(expr, fmt, arg...) do { \
+	if (expr) { \
+		ERR(fmt, ##arg); \
+		return; \
+	} \
+} while (0)
+#define RETVM_IF(expr, val, fmt, arg...) do { \
+	if (expr) { \
+		ERR(fmt, ##arg); \
+		return (val); \
+	} \
+} while (0)
 
 #define WARN_IF(expr, fmt, arg...) do { \
 	if (expr) { \
-		ERROR(fmt, ##arg); \
+		ERR(fmt, ##arg); \
 	} \
 } while (0)
 
@@ -57,12 +71,8 @@ extern "C"
 #define ASSERT(expr) \
 	if (!(expr)) \
 	{   \
-		ERROR("Assertion %s", #expr); \
+		ERR("Assertion %s", #expr); \
 	} \
 	assert(expr)
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* __PIMS_DEBUG_H__ */

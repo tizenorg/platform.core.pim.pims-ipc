@@ -1,9 +1,7 @@
-# Package Information for pkg-config
-
 prefix=@PREFIX@
-exec_prefix=@EXEC_PREFIX@
+exec_prefix=${prefix}/bin
 libdir=@LIB_INSTALL_DIR@
-includedir=@INCLUDE_INSTALL_DIR@/pims-ipc
+includedir=@INCLUDE_INSTALL_DIR@/@PROJECT_NAME@
 
 Name: @PROJECT_NAME@
 Description: @PROJECT_NAME@ library
