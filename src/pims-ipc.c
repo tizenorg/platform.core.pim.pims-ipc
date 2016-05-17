@@ -687,10 +687,7 @@ static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
 			ERR("fcntl() Fail(%d)", errno);
 
 		pthread_mutex_init(&handle->call_status_mutex, 0);
-
-		pthread_mutex_lock(&handle->call_status_mutex);
 		handle->call_status = PIMS_IPC_CALL_STATUS_READY;
-		pthread_mutex_unlock(&handle->call_status_mutex);
 
 		bzero(&server_addr, sizeof(server_addr));
 		server_addr.sun_family = AF_UNIX;
@@ -884,20 +881,22 @@ API int pims_ipc_call(pims_ipc_h ipc, char *module, char *function, pims_ipc_dat
 	RETV_IF(NULL == function, -1);
 
 	pthread_mutex_lock(&handle->call_status_mutex);
-	if (handle->call_status != PIMS_IPC_CALL_STATUS_READY) {
-		pthread_mutex_unlock(&handle->call_status_mutex);
-		ERR("the previous call is in progress : %p", ipc);
-		return -1;
-	}
+
+	int ret = 0;
+	do {
+		ret = __pims_ipc_send(handle, module, function, data_in);
+		if (0 != ret)
+			break;
+
+		ret = __pims_ipc_receive(handle, data_out);
+		if (0 != ret)
+			break;
+
+	} while (0);
+
 	pthread_mutex_unlock(&handle->call_status_mutex);
 
-	if (__pims_ipc_send(handle, module, function, data_in) != 0)
-		return -1;
-
-	if (__pims_ipc_receive(handle, data_out) != 0)
-		return -1;
-
-	return 0;
+	return ret;
 }
 
 static gboolean __call_async_idler_cb(gpointer data)
