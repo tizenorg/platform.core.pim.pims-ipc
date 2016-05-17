@@ -87,6 +87,8 @@ typedef struct {
 
 	pthread_mutex_t data_queue_mutex;
 	GList *data_queue;
+
+	pthread_mutex_t call_mutex; /* not to be interrupted while sending and receiving */
 } pims_ipc_s;
 
 static unsigned int ref_cnt;
@@ -692,6 +694,8 @@ static pims_ipc_h __pims_ipc_create(char *service, pims_ipc_mode_e mode)
 		handle->call_status = PIMS_IPC_CALL_STATUS_READY;
 		pthread_mutex_unlock(&handle->call_status_mutex);
 
+		pthread_mutex_init(&handle->call_mutex, 0);
+
 		bzero(&server_addr, sizeof(server_addr));
 		server_addr.sun_family = AF_UNIX;
 		snprintf(server_addr.sun_path, sizeof(server_addr.sun_path), "%s", handle->service);
@@ -891,13 +895,20 @@ API int pims_ipc_call(pims_ipc_h ipc, char *module, char *function, pims_ipc_dat
 	}
 	pthread_mutex_unlock(&handle->call_status_mutex);
 
-	if (__pims_ipc_send(handle, module, function, data_in) != 0)
-		return -1;
+	int ret = 0;
+	pthread_mutex_lock(&handle->call_mutex);
+	do {
+		ret = __pims_ipc_send(handle, module, function, data_in);
+		if (0 != ret)
+			break;
 
-	if (__pims_ipc_receive(handle, data_out) != 0)
-		return -1;
+		ret = __pims_ipc_receive(handle, data_out);
+		if (0 != ret)
+			break;
+	} while (0);
+	pthread_mutex_unlock(&handle->call_mutex);
 
-	return 0;
+	return ret;
 }
 
 static gboolean __call_async_idler_cb(gpointer data)
