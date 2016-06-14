@@ -389,6 +389,7 @@ static int __pims_ipc_receive(pims_ipc_s *handle, pims_ipc_data_h *data_out)
 
 	pollfds[0].fd = handle->fd;
 	pollfds[0].events = POLLIN | POLLERR | POLLHUP;
+	pollfds[0].revents = 0;
 
 	while (1) {
 		while (1) {
