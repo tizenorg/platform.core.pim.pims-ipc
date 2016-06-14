@@ -215,7 +215,6 @@ API int pims_ipc_svc_deinit_for_publish(void)
 
 API int pims_ipc_svc_publish(char *module, char *event, pims_ipc_data_h data)
 {
-	gboolean is_valid = FALSE;
 	unsigned int call_id_len;
 	unsigned int is_data = FALSE;
 	pims_ipc_data_s *data_in = data;
@@ -227,65 +226,58 @@ API int pims_ipc_svc_publish(char *module, char *event, pims_ipc_data_h data)
 	else
 		call_id_len = 0;
 
-	do {
-		unsigned int len, total_len;
-		len = sizeof(total_len) + sizeof(call_id_len) + call_id_len + sizeof(is_data);
-		total_len = len;
+	unsigned int len, total_len;
+	len = sizeof(total_len) + sizeof(call_id_len) + call_id_len + sizeof(is_data);
+	total_len = len;
 
-		if (data_in) {
-			is_data = TRUE;
-			len += sizeof(data_in->buf_size);
-			total_len = len + data_in->buf_size;
-		}
+	if (data_in) {
+		is_data = TRUE;
+		len += sizeof(data_in->buf_size);
+		total_len = len + data_in->buf_size;
+	}
 
-		int length = 0;
-		char buf[len+1];
-		memset(buf, 0x0, len+1);
+	int length = 0;
+	char buf[len+1];
+	memset(buf, 0x0, len+1);
 
-		memcpy(buf, &total_len, sizeof(total_len));
-		length += sizeof(total_len);
+	memcpy(buf, &total_len, sizeof(total_len));
+	length += sizeof(total_len);
 
-		memcpy(buf+length, &call_id_len, sizeof(call_id_len));
-		length += sizeof(call_id_len);
-		memcpy(buf+length, call_id, call_id_len);
-		length += call_id_len;
-		g_free(call_id);
+	memcpy(buf+length, &call_id_len, sizeof(call_id_len));
+	length += sizeof(call_id_len);
+	memcpy(buf+length, call_id, call_id_len);
+	length += call_id_len;
+	g_free(call_id);
 
-		memcpy(buf+length, &is_data, sizeof(is_data));
-		length += sizeof(is_data);
+	memcpy(buf+length, &is_data, sizeof(is_data));
+	length += sizeof(is_data);
+
+	if (is_data) {
+		memcpy(buf+length, &(data_in->buf_size), sizeof(data_in->buf_size));
+		length += sizeof(data_in->buf_size);
+	}
+
+	/* Publish to clients */
+	pthread_mutex_lock(&ipc_svc->subscribe_fds_mutex);
+	GList *cursor = g_list_first(ipc_svc->subscribe_fds);
+	int ret = 0;
+	while (cursor) {
+		int fd = GPOINTER_TO_INT(cursor->data);
+		pthread_mutex_unlock(&ipc_svc->subscribe_fds_mutex);
+		ret = socket_send(fd, buf, length);
+		if (ret < 0)
+			ERR("socket_send() Fail(%d)", ret);
 
 		if (is_data) {
-			memcpy(buf+length, &(data_in->buf_size), sizeof(data_in->buf_size));
-			length += sizeof(data_in->buf_size);
-		}
-
-		/* Publish to clients */
-		pthread_mutex_lock(&ipc_svc->subscribe_fds_mutex);
-		GList *cursor = g_list_first(ipc_svc->subscribe_fds);
-		int ret = 0;
-		while (cursor) {
-			int fd = GPOINTER_TO_INT(cursor->data);
-			pthread_mutex_unlock(&ipc_svc->subscribe_fds_mutex);
-			ret = socket_send(fd, buf, length);
+			ret = socket_send_data(fd, data_in->buf, data_in->buf_size);
 			if (ret < 0)
-				ERR("socket_send() Fail(%d)", ret);
+				ERR("socket_send_data() Fail(%d)", ret);
 
-			if (is_data) {
-				ret = socket_send_data(fd, data_in->buf, data_in->buf_size);
-				if (ret < 0)
-					ERR("socket_send_data() Fail(%d)", ret);
-
-			}
-			pthread_mutex_lock(&ipc_svc->subscribe_fds_mutex);
-			cursor = cursor->next;
 		}
-		pthread_mutex_unlock(&ipc_svc->subscribe_fds_mutex);
-
-		is_valid = TRUE;
-	} while (0);
-
-	if (is_valid == FALSE)
-		return -1;
+		pthread_mutex_lock(&ipc_svc->subscribe_fds_mutex);
+		cursor = cursor->next;
+	}
+	pthread_mutex_unlock(&ipc_svc->subscribe_fds_mutex);
 
 	return 0;
 }

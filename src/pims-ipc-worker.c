@@ -388,6 +388,7 @@ static void* __worker_loop(void *data)
 	struct pollfd pollfds[1];
 	pollfds[0].fd = worker_fd;
 	pollfds[0].events = POLLIN;
+	pollfds[0].revents = 0;
 
 	while (!worker_data->stop_thread) {
 		ret = poll(pollfds, 1, 3000); /* waiting command from router */
