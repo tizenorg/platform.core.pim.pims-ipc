@@ -574,6 +574,13 @@ int client_register_info(int client_fd, int client_pid)
 		ERR("_create_client_info() Fail(%d)", ret);
 		return -1;
 	}
+
+	/* check if exists */
+	pims_ipc_client_info_s *before_info = client_get_info(client_pid);
+	if (before_info) {
+		g_hash_table_remove(worker_client_info_map, GINT_TO_POINTER(client_pid));
+		client_destroy_info(before_info);
+	}
 	g_hash_table_insert(worker_client_info_map, GINT_TO_POINTER(client_pid), client_info);
 	DBG("-------inserted:pid(%d), info(%p)", client_pid, client_info);
 
