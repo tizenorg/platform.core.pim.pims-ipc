@@ -28,6 +28,7 @@
 #include <sys/un.h>
 #include <systemd/sd-daemon.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 
 #include "pims-internal.h"
 #include "pims-ipc-data-internal.h"
@@ -509,12 +510,17 @@ static gboolean __request_handler(GIOChannel *src, GIOCondition condition, gpoin
 	client_fd = g_io_channel_unix_get_fd(src);
 
 	if (G_IO_HUP & condition) {
-		INFO("client closed: client_fd(%d)", client_fd);
-		/* Find client_id */
-		client_id = __find_client_id(ipc_svc, client_fd, TRUE);
-		if (client_id) {
-			worker_stop_client_worker(ipc_svc, client_id);
-			free(client_id);
+		int flag = fcntl(client_fd, F_GETFL, 0);
+		if (0 == (FD_CLOEXEC & flag)) {
+			INFO("client closed: client_fd(%d)", client_fd);
+			/* Find client_id */
+			client_id = __find_client_id(ipc_svc, client_fd, TRUE);
+			if (client_id) {
+				worker_stop_client_worker(ipc_svc, client_id);
+				free(client_id);
+			}
+		} else {
+			ERR("fd(%d) is alrady closed", client_fd);
 		}
 
 		close(client_fd);

@@ -23,7 +23,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/eventfd.h>
-
+#include <fcntl.h>
 #include <glib.h>
 
 #include "pims-internal.h"
@@ -310,16 +310,24 @@ static int __send_raw_data(int fd, const char *client_id, pims_ipc_raw_data_s *d
 	return ret;
 }
 
-static int _get_pid_from_fd(int fd)
+static int _get_pid_from_fd(int fd, int *pid)
 {
 	struct ucred uc;
 	socklen_t uc_len = sizeof(uc);
+	if (NULL == pid) {
+		ERR("Invalid parameter: pid is NULL");
+		return -1;
+	}
 
-	if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &uc, &uc_len) < 0)
+	if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &uc, &uc_len) < 0) {
 		ERR("getsockopt() Failed(%d)", errno);
+		return -1;
+	}
 
 	DBG("Client PID(%d)", uc.pid);
-	return uc.pid;
+	*pid = uc.pid;
+
+	return 0;
 }
 
 static int __worker_loop_handle_raw_data(pims_ipc_worker_data_s *worker_data)
@@ -333,7 +341,9 @@ static int __worker_loop_handle_raw_data(pims_ipc_worker_data_s *worker_data)
 	if (FALSE == worker_pop_raw_data(worker_data, &raw_data))
 		return disconnected;
 
-	int client_pid = _get_pid_from_fd(worker_data->client_fd);
+	int ret = 0;
+	int client_pid = 0;
+	ret = _get_pid_from_fd(worker_data->client_fd, &client_pid);
 
 	if (UTILS_STR_EQUAL == strcmp(PIMS_IPC_CALL_ID_CREATE, raw_data->call_id)) {
 		client_register_info(worker_data->client_fd, client_pid);
@@ -415,15 +425,20 @@ static void* __worker_loop(void *data)
 		ERR("client fd closed, worker_fd : %d", worker_fd);
 	INFO("task thread terminated --------------------------- (worker_fd : %d)", worker_fd);
 
-	int client_pid = _get_pid_from_fd(worker_data->client_fd);
+	int flag = fcntl(worker_data->client_fd, F_GETFL, 0);
+	if (0 == (FD_CLOEXEC & flag)) {
+		int client_pid = 0;
+		ret = _get_pid_from_fd(worker_data->client_fd, &client_pid);
+		/*	pthread_mutex_lock(&worker_data->client_mutex); */
+		g_hash_table_remove(worker_client_info_map, GINT_TO_POINTER(client_pid));
+		DBG("client pid(%u) is removed", client_pid);
+		/*	pthread_mutex_unlock(&worker_data->client_mutex); */
+	} else {
+		DBG("fd(%d) is already closed", worker_data->client_fd);
+	}
 
 	worker_free_data(worker_data);
 	close(worker_fd);
-
-	/*	pthread_mutex_lock(&worker_data->client_mutex); */
-	g_hash_table_remove(worker_client_info_map, GINT_TO_POINTER(client_pid));
-	DBG("----------------removed(%d)", client_pid);
-	/*	pthread_mutex_unlock(&worker_data->client_mutex); */
 
 	if (_client_disconnected_cb.callback)
 		_client_disconnected_cb.callback((pims_ipc_h)pid, _client_disconnected_cb.user_data);
@@ -574,6 +589,7 @@ int client_register_info(int client_fd, int client_pid)
 		ERR("_create_client_info() Fail(%d)", ret);
 		return -1;
 	}
+
 	g_hash_table_insert(worker_client_info_map, GINT_TO_POINTER(client_pid), client_info);
 	DBG("-------inserted:pid(%d), info(%p)", client_pid, client_info);
 
