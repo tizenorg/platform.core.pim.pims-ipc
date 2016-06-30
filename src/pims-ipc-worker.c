@@ -23,7 +23,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/eventfd.h>
-
+#include <fcntl.h>
 #include <glib.h>
 
 #include "pims-internal.h"
@@ -415,15 +415,19 @@ static void* __worker_loop(void *data)
 		ERR("client fd closed, worker_fd : %d", worker_fd);
 	INFO("task thread terminated --------------------------- (worker_fd : %d)", worker_fd);
 
-	int client_pid = _get_pid_from_fd(worker_data->client_fd);
+	int flag = fcntl(worker_data->client_fd, F_GETFL, 0);
+	if (0 == (FD_CLOEXEC & flag)) {
+		int client_pid = _get_pid_from_fd(worker_data->client_fd);
+		/*	pthread_mutex_lock(&worker_data->client_mutex); */
+		g_hash_table_remove(worker_client_info_map, GINT_TO_POINTER(client_pid));
+		DBG("client pid(%u) is removed", client_pid);
+		/*	pthread_mutex_unlock(&worker_data->client_mutex); */
+	} else {
+		DBG("fd(%d) is already closed", worker_data->client_fd);
+	}
 
 	worker_free_data(worker_data);
 	close(worker_fd);
-
-	/*	pthread_mutex_lock(&worker_data->client_mutex); */
-	g_hash_table_remove(worker_client_info_map, GINT_TO_POINTER(client_pid));
-	DBG("----------------removed(%d)", client_pid);
-	/*	pthread_mutex_unlock(&worker_data->client_mutex); */
 
 	if (_client_disconnected_cb.callback)
 		_client_disconnected_cb.callback((pims_ipc_h)pid, _client_disconnected_cb.user_data);
