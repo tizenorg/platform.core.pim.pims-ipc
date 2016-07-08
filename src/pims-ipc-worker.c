@@ -47,6 +47,7 @@ static __thread pims_ipc_svc_client_disconnected_cb_t _client_disconnected_cb = 
 
 static int unique_sequence_number;
 static GHashTable *worker_client_info_map; /* key : worker_id, data : pims_ipc_client_info_s* */
+static int client_register_info(pims_ipc_worker_data_s *worker_data, int client_pid);
 
 int worker_wait_idle_worker_ready(pims_ipc_worker_data_s *worker_data)
 {
@@ -149,6 +150,8 @@ void worker_free_data(gpointer data)
 	if (worker_data->list)
 		g_list_free_full(worker_data->list, worker_free_raw_data);
 	pthread_mutex_unlock(&worker_data->queue_mutex);
+
+	pthread_mutex_destroy(&worker_data->client_mutex);
 
 	pthread_cond_destroy(&worker_data->ready);
 	pthread_mutex_destroy(&worker_data->ready_mutex);
@@ -336,7 +339,7 @@ static int __worker_loop_handle_raw_data(pims_ipc_worker_data_s *worker_data)
 	int client_pid = _get_pid_from_fd(worker_data->client_fd);
 
 	if (UTILS_STR_EQUAL == strcmp(PIMS_IPC_CALL_ID_CREATE, raw_data->call_id)) {
-		client_register_info(worker_data->client_fd, client_pid);
+		client_register_info(worker_data, client_pid);
 
 	} else if (UTILS_STR_EQUAL == strcmp(PIMS_IPC_CALL_ID_DESTROY, raw_data->call_id)) {
 		disconnected = TRUE;
@@ -418,10 +421,10 @@ static void* __worker_loop(void *data)
 	int flag = fcntl(worker_data->client_fd, F_GETFL, 0);
 	if (0 == (FD_CLOEXEC & flag)) {
 		int client_pid = _get_pid_from_fd(worker_data->client_fd);
-		/*	pthread_mutex_lock(&worker_data->client_mutex); */
+		pthread_mutex_lock(&worker_data->client_mutex);
 		g_hash_table_remove(worker_client_info_map, GINT_TO_POINTER(client_pid));
 		DBG("client pid(%u) is removed", client_pid);
-		/*	pthread_mutex_unlock(&worker_data->client_mutex); */
+		pthread_mutex_unlock(&worker_data->client_mutex);
 	} else {
 		DBG("fd(%d) is already closed", worker_data->client_fd);
 	}
@@ -449,7 +452,7 @@ void worker_start_idle_worker(pims_ipc_svc_s *ipc_data)
 		pthread_mutex_init(&worker_data->queue_mutex, 0);
 		pthread_mutex_init(&worker_data->ready_mutex, NULL);
 		pthread_cond_init(&worker_data->ready, NULL);
-		/* pthread_mutex_init(&worker_data->client_mutex, 0); */
+		pthread_mutex_init(&worker_data->client_mutex, 0);
 
 		utils_launch_thread(__worker_loop, worker_data);
 		idle_worker_pool = g_list_append(idle_worker_pool, worker_data);
@@ -568,18 +571,20 @@ static int _create_client_info(int fd, pims_ipc_client_info_s **p_client_info)
 	return 0;
 }
 
-int client_register_info(int client_fd, int client_pid)
+static int client_register_info(pims_ipc_worker_data_s *worker_data, int client_pid)
 {
 	pims_ipc_client_info_s *client_info = NULL;
 	int ret = 0;
 
-	ret = _create_client_info(client_fd, &client_info);
+	ret = _create_client_info(worker_data->client_fd, &client_info);
 	if (ret < 0) {
 		ERR("_create_client_info() Fail(%d)", ret);
 		return -1;
 	}
+	pthread_mutex_lock(&worker_data->client_mutex);
 	g_hash_table_insert(worker_client_info_map, GINT_TO_POINTER(client_pid), client_info);
 	DBG("-------inserted:pid(%d), info(%p)", client_pid, client_info);
+	pthread_mutex_unlock(&worker_data->client_mutex);
 
 	return 0;
 }
