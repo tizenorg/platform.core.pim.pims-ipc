@@ -51,7 +51,6 @@ void worker_free_raw_data(void *data);
 
 void client_init(void);
 void client_deinit(void);
-int client_register_info(int client_fd, int client_pid);
 void client_destroy_info(gpointer p);
 int client_get_unique_sequence_number(void);
 pims_ipc_client_info_s* client_get_info(int worker_id);
