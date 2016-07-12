@@ -1,6 +1,6 @@
 Name:       pims-ipc
 Summary:    library for PIMs IPC
-Version:    0.1.19
+Version:    0.1.20
 Release:    1
 Group:      System/Libraries
 License:    Apache-2.0
