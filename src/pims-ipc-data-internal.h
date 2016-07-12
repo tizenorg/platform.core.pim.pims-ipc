@@ -73,7 +73,6 @@ typedef struct {
 	pthread_mutex_t queue_mutex;
 	pthread_mutex_t ready_mutex;
 	pthread_cond_t ready;
-	pthread_mutex_t client_mutex;
 } pims_ipc_worker_data_s;
 
 #ifdef __cplusplus
