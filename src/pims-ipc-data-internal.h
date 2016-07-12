@@ -69,11 +69,11 @@ typedef struct {
 	int fd;
 	int client_fd;
 	int stop_thread;
+	int client_pid;
 	GList *list;		/* pims_ipc_raw_data_s list */
 	pthread_mutex_t queue_mutex;
 	pthread_mutex_t ready_mutex;
 	pthread_cond_t ready;
-	pthread_mutex_t client_mutex;
 } pims_ipc_worker_data_s;
 
 #ifdef __cplusplus
